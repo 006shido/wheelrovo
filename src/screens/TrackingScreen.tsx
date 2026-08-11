@@ -16,6 +16,36 @@ import { Coordinate, getDistance, calculateRouteDistance, formatDistance, format
 import { SIMULATED_ROUTE } from '../utils/mockData';
 import { saveTrip, loadDriverState, saveDriverState, loadCompletedTasks, saveCompletedTasks, DriverState, Trip } from '../utils/storage';
 import WebMapView from '../components/WebMapView';
+import {
+  requestBackgroundLocationPermissions,
+  startBackgroundTracking,
+  stopBackgroundTracking,
+} from '../services/locationTask';
+import { getPointsForTrip } from '../services/db';
+
+// Recomputes the authoritative trip summary from what actually made it to the
+// durable SQLite buffer, rather than trusting in-memory React state — the
+// background task can keep writing points after the screen backgrounds and
+// this component's state stops updating, so the DB may have more (and more
+// accurate) data than `coordinates`/`topSpeed` do by the time Stop is pressed.
+async function reconcileTripFromDb(tripId: string) {
+  const points = await getPointsForTrip(tripId);
+  if (points.length === 0) return null;
+
+  const coordinates: Coordinate[] = points.map((p) => ({
+    latitude: p.latitude,
+    longitude: p.longitude,
+    timestamp: p.timestamp,
+  }));
+  const distance = calculateRouteDistance(coordinates);
+  const durationSec = Math.max(
+    1,
+    Math.round((points[points.length - 1].timestamp - points[0].timestamp) / 1000)
+  );
+  const topSpeedKmh = points.reduce((max, p) => Math.max(max, (p.speed ?? 0) * 3.6), 0);
+
+  return { coordinates, distance, durationSec, topSpeedKmh };
+}
 
 // Conditionally import MapView to prevent compilation crashes on Web
 let MapView: any;
@@ -30,9 +60,13 @@ if (Platform.OS !== 'web') {
 
 interface TrackingScreenProps {
   onTripCompleted: () => void;
+  userId: string;
 }
 
-export default function TrackingScreen({ onTripCompleted }: TrackingScreenProps) {
+export default function TrackingScreen({ onTripCompleted, userId }: TrackingScreenProps) {
+  // Identifies the SQLite trip row + background task session for the current
+  // recording; null when nothing is being tracked.
+  const activeTripIdRef = useRef<string | null>(null);
   // Tracking state
   const [isTracking, setIsTracking] = useState(false);
   const [useSimulator, setUseSimulator] = useState(Platform.OS === 'web');
@@ -84,11 +118,16 @@ export default function TrackingScreen({ onTripCompleted }: TrackingScreenProps)
 
   // Request permissions
   const requestPermissions = async () => {
-    const { status } = await Location.requestForegroundPermissionsAsync();
-    const granted = status === 'granted';
+    // Background permission implies foreground is already granted (the OS
+    // requires the foreground prompt first), so this covers both the live
+    // in-app updates and the ability to keep logging while backgrounded.
+    const granted = await requestBackgroundLocationPermissions();
     setLocationPermission(granted);
     if (!granted) {
-      Alert.alert('Permission Denied', 'GPS location permission is required to track your drives.');
+      Alert.alert(
+        'Permission Denied',
+        'Wheelrovo needs "Always Allow" location access to keep tracking your drive while your phone is locked or the app is in the background.'
+      );
     }
     return granted;
   };
@@ -218,28 +257,70 @@ export default function TrackingScreen({ onTripCompleted }: TrackingScreenProps)
       if (useSimulator) {
         startSimulation();
       } else {
+        // Foreground watch drives the live speed/distance readout on screen;
+        // the background task is the durable path that keeps recording once
+        // the phone locks or the app leaves the foreground, writing straight
+        // to SQLite so nothing depends on this component staying mounted.
+        const tripId = `trip-${Date.now()}`;
+        activeTripIdRef.current = tripId;
         await startLocationTracking();
+        try {
+          await startBackgroundTracking(tripId, userId);
+        } catch (e) {
+          console.error('Failed to start background tracking', e);
+          Alert.alert(
+            'Background Tracking Unavailable',
+            'Live tracking will still work while the app is open, but the drive may stop logging if you lock your phone or switch apps.'
+          );
+        }
       }
     } else {
       setIsTracking(false);
       stopTimer();
       if (useSimulator) {
         stopSimulation();
+        processCompletedTrip();
       } else {
         stopLocationTracking();
+        const tripId = activeTripIdRef.current;
+        if (tripId) {
+          await stopBackgroundTracking(tripId);
+          const reconciled = await reconcileTripFromDb(tripId);
+          activeTripIdRef.current = null;
+          if (reconciled) {
+            processCompletedTrip(reconciled);
+            return;
+          }
+        }
+        // Fell through with no DB points (e.g. permission was denied and the
+        // background task never started) — fall back to whatever the
+        // foreground watch captured in React state.
+        processCompletedTrip();
       }
-      processCompletedTrip();
     }
   };
 
-  // Finalize trip, check achievements, save to storage
-  const processCompletedTrip = async () => {
-    if (duration < 5) {
+  // Finalize trip, check achievements, save to storage.
+  // `reconciled` (when present) comes from the durable SQLite buffer and
+  // takes precedence over in-memory state, since background tracking may
+  // have kept capturing points after this component's state stopped updating.
+  const processCompletedTrip = async (reconciled?: {
+    coordinates: Coordinate[];
+    distance: number;
+    durationSec: number;
+    topSpeedKmh: number;
+  }) => {
+    const finalDuration = reconciled?.durationSec ?? duration;
+    const finalDistance = reconciled?.distance ?? distance;
+    const finalTopSpeed = reconciled?.topSpeedKmh ?? topSpeed;
+    const finalCoordinates = reconciled?.coordinates ?? coordinates;
+
+    if (finalDuration < 5) {
       Alert.alert('Trip Too Short', 'Drive tracking must be at least 5 seconds long to save.');
       return;
     }
 
-    const avgSpeed = distance > 0 && duration > 0 ? (distance / (duration / 3600)) : 0;
+    const avgSpeed = finalDistance > 0 && finalDuration > 0 ? (finalDistance / (finalDuration / 3600)) : 0;
 
     const newTrip: Trip = {
       id: `trip-${Date.now()}`,
@@ -250,11 +331,11 @@ export default function TrackingScreen({ onTripCompleted }: TrackingScreenProps)
         hour: '2-digit',
         minute: '2-digit',
       }),
-      duration,
-      distance,
+      duration: finalDuration,
+      distance: finalDistance,
       avgSpeed,
-      topSpeed, // Save top speed
-      coordinates,
+      topSpeed: finalTopSpeed,
+      coordinates: finalCoordinates,
     };
 
     await saveTrip(newTrip);
@@ -298,21 +379,21 @@ export default function TrackingScreen({ onTripCompleted }: TrackingScreenProps)
     }
 
     // Task 2: Distance Commute (> 1.5 km)
-    if (distance >= 1.5 && !completedTaskIds.includes('task-2')) {
+    if (finalDistance >= 1.5 && !completedTaskIds.includes('task-2')) {
       completedTaskIds.push('task-2');
       newlyCompletedTaskIds.push('Short Commute');
       xpAwarded += 30;
     }
 
     // Task 3: Eco Cruiser (avg speed < 50 km/h)
-    if (distance > 0.1 && avgSpeed < 50 && !completedTaskIds.includes('task-3')) {
+    if (finalDistance > 0.1 && avgSpeed < 50 && !completedTaskIds.includes('task-3')) {
       completedTaskIds.push('task-3');
       newlyCompletedTaskIds.push('Eco Cruiser');
       xpAwarded += 25;
     }
 
     // Task 4: Road Endurance (> 60 seconds)
-    if (duration >= 60 && !completedTaskIds.includes('task-4')) {
+    if (finalDuration >= 60 && !completedTaskIds.includes('task-4')) {
       completedTaskIds.push('task-4');
       newlyCompletedTaskIds.push('Road Endurance');
       xpAwarded += 20;
@@ -349,10 +430,10 @@ export default function TrackingScreen({ onTripCompleted }: TrackingScreenProps)
 
     // Save summary details to display
     setLastTripSummary({
-      distance,
-      duration,
+      distance: finalDistance,
+      duration: finalDuration,
       avgSpeed,
-      topSpeed,
+      topSpeed: finalTopSpeed,
       xpEarned: xpAwarded,
       unlockedTasks: newlyCompletedTaskIds,
       streakSecured,

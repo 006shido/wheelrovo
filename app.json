@@ -7,7 +7,13 @@
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "light",
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": true,
+      "infoPlist": {
+        "UIBackgroundModes": ["location"],
+        "NSLocationWhenInUseUsageDescription": "Wheelrovo uses your location to track your drives and calculate distance and speed.",
+        "NSLocationAlwaysAndWhenInUseUsageDescription": "Wheelrovo tracks your drive in the background so trip logging keeps working while your phone is locked or the app isn't in view.",
+        "NSLocationAlwaysUsageDescription": "Wheelrovo tracks your drive in the background so trip logging keeps working while your phone is locked or the app isn't in view."
+      }
     },
     "android": {
       "adaptiveIcon": {
@@ -16,10 +22,28 @@
         "backgroundImage": "./assets/android-icon-background.png",
         "monochromeImage": "./assets/android-icon-monochrome.png"
       },
-      "predictiveBackGestureEnabled": false
+      "predictiveBackGestureEnabled": false,
+      "permissions": [
+        "ACCESS_FINE_LOCATION",
+        "ACCESS_COARSE_LOCATION",
+        "ACCESS_BACKGROUND_LOCATION",
+        "FOREGROUND_SERVICE",
+        "FOREGROUND_SERVICE_LOCATION"
+      ]
     },
     "web": {
       "favicon": "./assets/favicon.png"
-    }
+    },
+    "plugins": [
+      [
+        "expo-location",
+        {
+          "locationAlwaysAndWhenInUsePermission": "Wheelrovo tracks your drive in the background so trip logging keeps working while your phone is locked or the app isn't in view.",
+          "isAndroidBackgroundLocationEnabled": true,
+          "isAndroidForegroundServiceEnabled": true
+        }
+      ],
+      "expo-sqlite"
+    ]
   }
 }

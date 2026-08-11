@@ -16,6 +16,8 @@ import HistoryScreen from './src/screens/HistoryScreen';
 import AuthScreen from './src/screens/AuthScreen';
 import { LayoutGrid, Navigation, History, Compass, User, LogOut } from 'lucide-react-native';
 import { getCurrentUser, setCurrentUser, UserProfile } from './src/utils/storage';
+import { reconcileTripsOnLaunch } from './src/services/locationTask';
+import { startPeriodicSync } from './src/services/sync';
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<'dashboard' | 'tracking' | 'history'>('dashboard');
@@ -26,11 +28,22 @@ export default function App() {
   // Check auth session on startup
   useEffect(() => {
     (async () => {
+      // Close out any trip left "active" by a killed background process
+      // before the tracking UI can render and get confused by it.
+      await reconcileTripsOnLaunch();
       const user = await getCurrentUser();
       setSessionUser(user);
       setAuthLoading(false);
     })();
   }, []);
+
+  // Periodic sync of buffered trip points runs for as long as someone is
+  // logged in, independent of which tab is open, and stops cleanly on logout.
+  useEffect(() => {
+    if (!currentUser) return;
+    const stopSync = startPeriodicSync(currentUser.email);
+    return stopSync;
+  }, [currentUser?.email]);
 
   const handleTripCompleted = () => {
     setRefreshTrigger((prev) => prev + 1);
@@ -72,7 +85,7 @@ export default function App() {
           />
         );
       case 'tracking':
-        return <TrackingScreen onTripCompleted={handleTripCompleted} />;
+        return <TrackingScreen onTripCompleted={handleTripCompleted} userId={currentUser.email} />;
       case 'history':
         return (
           <HistoryScreen
