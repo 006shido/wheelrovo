@@ -6,8 +6,8 @@ export interface Task {
   description: string;
   rewardXp: number;
   completed: boolean;
-  type: 'login' | 'distance' | 'speed' | 'duration';
-  targetValue?: number; // e.g., 2 km, 120 seconds
+  type: 'login' | 'distance' | 'speed' | 'duration' | 'safety' | 'smoothness';
+  targetValue?: number; // e.g., 2 km, 120 seconds, or a 0-100 score threshold
 }
 
 export interface Milestone {
@@ -51,6 +51,24 @@ export const DEFAULT_TASKS: Task[] = [
     completed: false,
     type: 'duration',
     targetValue: 60,
+  },
+  {
+    id: 'task-5',
+    title: 'Smooth Operator',
+    description: 'Complete a trip with a smoothness score of 80 or higher',
+    rewardXp: 30,
+    completed: false,
+    type: 'smoothness',
+    targetValue: 80,
+  },
+  {
+    id: 'task-6',
+    title: 'Steady Hands',
+    description: 'Complete a trip with a safety score of 85 or higher',
+    rewardXp: 30,
+    completed: false,
+    type: 'safety',
+    targetValue: 85,
   },
 ];
 

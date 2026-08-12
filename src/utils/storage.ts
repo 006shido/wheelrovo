@@ -9,6 +9,16 @@ export interface Trip {
   avgSpeed: number; // in km/h
   topSpeed?: number; // in km/h
   coordinates: Coordinate[];
+  // Performance/driving-quality fields — optional so trips saved before this
+  // feature existed still load fine without these.
+  maxAccelerationMs2?: number;
+  maxBrakingMs2?: number;
+  avgAccelerationMs2?: number;
+  harshAccelerationEvents?: number;
+  harshBrakingEvents?: number;
+  safetyScore?: number;
+  smoothnessScore?: number;
+  comfortScore?: number;
 }
 
 export interface DriverState {

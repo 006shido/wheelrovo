@@ -37,7 +37,7 @@ let dbPromise: Promise<SQLite.SQLiteDatabase> | null = null;
 // Single shared connection, lazily opened and migrated once.
 export function getDb(): Promise<SQLite.SQLiteDatabase> {
   if (!dbPromise) {
-    dbPromise = SQLite.openDatabaseAsync(DB_NAME).then(async (db) => {
+    dbPromise = SQLite.openDatabaseAsync(DB_NAME).then(async (db: SQLite.SQLiteDatabase) => {
       await db.execAsync(`
         PRAGMA journal_mode = WAL;
 
@@ -68,7 +68,9 @@ export function getDb(): Promise<SQLite.SQLiteDatabase> {
       return db;
     });
   }
-  return dbPromise;
+  // Non-null: the branch above always assigns dbPromise when it was null,
+  // so it is guaranteed to be set by this point.
+  return dbPromise!;
 }
 
 // --- Trips ---

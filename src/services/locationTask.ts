@@ -23,7 +23,7 @@ const STALE_TRIP_THRESHOLD_MS = 5 * 60 * 1000;
 // is fully backgrounded/killed, so it must not depend on React state or any
 // in-memory module variable set by the UI — it reads/writes only through the
 // SQLite layer, which is safe to touch from either context.
-TaskManager.defineTask(LOCATION_TASK_NAME, async ({ data, error }) => {
+TaskManager.defineTask(LOCATION_TASK_NAME, async ({ data, error }: { data: any; error: any }) => {
   if (error) {
     console.error('[locationTask] task error', error);
     return;

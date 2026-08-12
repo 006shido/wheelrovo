@@ -21,10 +21,12 @@ import {
   clearAllData,
   getCurrentUser,
   updateUserPassword,
+  loadTrips,
   DriverState,
   UserProfile,
 } from '../utils/storage';
 import { DEFAULT_TASKS, MILESTONES, Task } from '../utils/mockData';
+import { computeAchievementProgress, AchievementProgress, AchievementTier } from '../utils/achievements';
 
 interface DashboardScreenProps {
   onDataReset?: () => void;
@@ -41,6 +43,7 @@ export default function DashboardScreen({ onDataReset, refreshTrigger, onLogout 
   });
   const [profile, setProfile] = useState<UserProfile | null>(null);
   const [tasks, setTasks] = useState<Task[]>(DEFAULT_TASKS);
+  const [achievements, setAchievements] = useState<AchievementProgress[]>([]);
   const [loading, setLoading] = useState(true);
 
   // Change Password flow states
@@ -71,6 +74,9 @@ export default function DashboardScreen({ onDataReset, refreshTrigger, onLogout 
       }
       return { ...task, completed: isCompleted };
     });
+
+    const trips = await loadTrips();
+    setAchievements(computeAchievementProgress(trips));
 
     setProfile(user);
     setDriverState(state);
@@ -432,6 +438,48 @@ export default function DashboardScreen({ onDataReset, refreshTrigger, onLogout 
                   {task.completed ? 'COMPLETED' : 'ACTIVE'}
                 </Text>
               </View>
+            </View>
+          ))}
+        </View>
+
+        {/* Lifetime Achievements */}
+        <View style={styles.tasksSection}>
+          <Text style={styles.sectionHeader}>ACHIEVEMENTS</Text>
+
+          {achievements.map(({ achievement, unlocked, value, target, progress }) => (
+            <View
+              key={achievement.id}
+              style={[styles.achievementCard, unlocked && styles.achievementCardUnlocked]}
+            >
+              <View style={styles.taskHeader}>
+                <View style={styles.taskInfo}>
+                  <View style={styles.achievementTitleRow}>
+                    <Text style={[styles.taskTitle, !unlocked && styles.achievementTitleLocked]}>
+                      {achievement.title.toUpperCase()}
+                    </Text>
+                    <View style={styles.tierBadge}>
+                      <Text style={styles.tierBadgeText}>{achievement.tier.toUpperCase()}</Text>
+                    </View>
+                  </View>
+                  <Text style={styles.taskDescription}>{achievement.description}</Text>
+                </View>
+                {unlocked ? (
+                  <Trophy color={Theme.colors.primary} size={18} fill={Theme.colors.primary} />
+                ) : (
+                  <Lock color={Theme.colors.textMuted} size={16} />
+                )}
+              </View>
+
+              {!unlocked && (
+                <View style={styles.achievementProgressRow}>
+                  <View style={styles.progressBarBg}>
+                    <View style={[styles.progressBarFill, { width: `${progress * 100}%` }]} />
+                  </View>
+                  <Text style={styles.achievementProgressText}>
+                    {Math.min(value, target)}/{target}
+                  </Text>
+                </View>
+              )}
             </View>
           ))}
         </View>
@@ -853,5 +901,53 @@ const styles = StyleSheet.create({
     fontSize: 9,
     fontWeight: 'bold',
     letterSpacing: 0.5,
+  },
+  achievementCard: {
+    backgroundColor: Theme.colors.cardBackground,
+    borderRadius: Theme.borderRadius.md,
+    padding: Theme.spacing.md,
+    marginBottom: Theme.spacing.sm,
+    borderWidth: 1.5,
+    borderColor: Theme.colors.border,
+    opacity: 0.7,
+  },
+  achievementCardUnlocked: {
+    opacity: 1,
+    borderColor: Theme.colors.borderActive,
+  },
+  achievementTitleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  achievementTitleLocked: {
+    color: Theme.colors.textMuted,
+  },
+  tierBadge: {
+    marginLeft: Theme.spacing.sm,
+    paddingHorizontal: 6,
+    paddingVertical: 1,
+    borderRadius: Theme.borderRadius.sm,
+    borderWidth: 1,
+    borderColor: Theme.colors.border,
+  },
+  tierBadgeText: {
+    color: Theme.colors.textMuted,
+    fontSize: 7,
+    fontWeight: 'bold',
+    letterSpacing: 0.5,
+  },
+  achievementProgressRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginTop: Theme.spacing.sm,
+    paddingTop: Theme.spacing.sm,
+    borderTopWidth: 1.5,
+    borderTopColor: Theme.colors.border,
+  },
+  achievementProgressText: {
+    color: Theme.colors.textMuted,
+    fontSize: 9,
+    fontWeight: 'bold',
+    marginLeft: Theme.spacing.sm,
   },
 });

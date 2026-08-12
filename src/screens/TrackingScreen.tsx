@@ -12,10 +12,11 @@ import {
 import { Play, Square, Navigation, Award, RotateCcw, MapPin, Globe } from 'lucide-react-native';
 import * as Location from 'expo-location';
 import { Theme } from '../styles/theme';
-import { Coordinate, getDistance, calculateRouteDistance, formatDistance, formatDuration, formatSpeed } from '../utils/stats';
+import { Coordinate, getDistance, calculateRouteDistance, formatDistance, formatDuration, formatSpeed, calculateTripPerformance, formatAcceleration, TripPerformance } from '../utils/stats';
 import { SIMULATED_ROUTE } from '../utils/mockData';
 import { saveTrip, loadDriverState, saveDriverState, loadCompletedTasks, saveCompletedTasks, DriverState, Trip } from '../utils/storage';
 import WebMapView from '../components/WebMapView';
+import ScoreBar from '../components/ScoreBar';
 import {
   requestBackgroundLocationPermissions,
   startBackgroundTracking,
@@ -36,6 +37,7 @@ async function reconcileTripFromDb(tripId: string) {
     latitude: p.latitude,
     longitude: p.longitude,
     timestamp: p.timestamp,
+    speedKmh: p.speed != null ? p.speed * 3.6 : undefined,
   }));
   const distance = calculateRouteDistance(coordinates);
   const durationSec = Math.max(
@@ -93,6 +95,7 @@ export default function TrackingScreen({ onTripCompleted, userId }: TrackingScre
     unlockedTasks: string[];
     streakSecured: boolean;
     newStreak: number;
+    performance: TripPerformance;
   } | null>(null);
 
   // References for timers
@@ -172,6 +175,7 @@ export default function TrackingScreen({ onTripCompleted, userId }: TrackingScre
             latitude,
             longitude,
             timestamp: location.timestamp,
+            speedKmh,
           };
 
           setCurrentSpeed(speedKmh);
@@ -219,6 +223,7 @@ export default function TrackingScreen({ onTripCompleted, userId }: TrackingScre
         latitude: simPoint.latitude,
         longitude: simPoint.longitude,
         timestamp: Date.now(),
+        speedKmh: simSpeed,
       };
 
       setCoordinates((prev) => {
@@ -321,6 +326,7 @@ export default function TrackingScreen({ onTripCompleted, userId }: TrackingScre
     }
 
     const avgSpeed = finalDistance > 0 && finalDuration > 0 ? (finalDistance / (finalDuration / 3600)) : 0;
+    const performance = calculateTripPerformance(finalCoordinates, finalDuration);
 
     const newTrip: Trip = {
       id: `trip-${Date.now()}`,
@@ -336,6 +342,14 @@ export default function TrackingScreen({ onTripCompleted, userId }: TrackingScre
       avgSpeed,
       topSpeed: finalTopSpeed,
       coordinates: finalCoordinates,
+      maxAccelerationMs2: performance.maxAccelerationMs2,
+      maxBrakingMs2: performance.maxBrakingMs2,
+      avgAccelerationMs2: performance.avgAccelerationMs2,
+      harshAccelerationEvents: performance.harshAccelerationEvents,
+      harshBrakingEvents: performance.harshBrakingEvents,
+      safetyScore: performance.safetyScore,
+      smoothnessScore: performance.smoothnessScore,
+      comfortScore: performance.comfortScore,
     };
 
     await saveTrip(newTrip);
@@ -399,6 +413,20 @@ export default function TrackingScreen({ onTripCompleted, userId }: TrackingScre
       xpAwarded += 20;
     }
 
+    // Task 5: Smooth Operator (smoothness score >= 80)
+    if (performance.smoothnessScore >= 80 && !completedTaskIds.includes('task-5')) {
+      completedTaskIds.push('task-5');
+      newlyCompletedTaskIds.push('Smooth Operator');
+      xpAwarded += 30;
+    }
+
+    // Task 6: Steady Hands (safety score >= 85)
+    if (performance.safetyScore >= 85 && !completedTaskIds.includes('task-6')) {
+      completedTaskIds.push('task-6');
+      newlyCompletedTaskIds.push('Steady Hands');
+      xpAwarded += 30;
+    }
+
     // Save completed tasks list if updated
     if (newlyCompletedTaskIds.length > 0) {
       await saveCompletedTasks(completedTaskIds);
@@ -438,6 +466,7 @@ export default function TrackingScreen({ onTripCompleted, userId }: TrackingScre
       unlockedTasks: newlyCompletedTaskIds,
       streakSecured,
       newStreak,
+      performance,
     });
     setShowSummary(true);
 
@@ -578,6 +607,28 @@ export default function TrackingScreen({ onTripCompleted, userId }: TrackingScre
 
             <View style={styles.summaryXpAward}>
               <Text style={styles.summaryXpText}>+{lastTripSummary.xpEarned} XP AWARDED</Text>
+            </View>
+
+            {/* Driving Performance Breakdown */}
+            <View style={styles.performanceSection}>
+              <Text style={styles.performanceSectionTitle}>DRIVING PERFORMANCE</Text>
+              <ScoreBar label="SAFETY" score={lastTripSummary.performance.safetyScore} />
+              <ScoreBar label="SMOOTHNESS" score={lastTripSummary.performance.smoothnessScore} />
+              <ScoreBar label="COMFORT" score={lastTripSummary.performance.comfortScore} />
+              <View style={styles.accelRow}>
+                <View style={styles.accelCell}>
+                  <Text style={styles.summaryLabel}>MAX ACCEL</Text>
+                  <Text style={styles.summaryVal}>
+                    {formatAcceleration(lastTripSummary.performance.maxAccelerationMs2)} m/s²
+                  </Text>
+                </View>
+                <View style={styles.accelCell}>
+                  <Text style={styles.summaryLabel}>MAX BRAKING</Text>
+                  <Text style={styles.summaryVal}>
+                    {formatAcceleration(lastTripSummary.performance.maxBrakingMs2)} m/s²
+                  </Text>
+                </View>
+              </View>
             </View>
 
             {lastTripSummary.streakSecured && (
@@ -886,6 +937,31 @@ const styles = StyleSheet.create({
     color: Theme.colors.primary,
     fontWeight: 'bold',
     fontSize: 12,
+  },
+  performanceSection: {
+    width: '100%',
+    marginTop: Theme.spacing.sm,
+    marginBottom: Theme.spacing.xs,
+    padding: Theme.spacing.sm,
+    borderRadius: Theme.borderRadius.sm,
+    borderWidth: 1,
+    borderColor: Theme.colors.border,
+    backgroundColor: '#000000',
+  },
+  performanceSectionTitle: {
+    color: Theme.colors.textMuted,
+    fontSize: 9,
+    fontWeight: 'bold',
+    letterSpacing: 1,
+    marginBottom: Theme.spacing.sm,
+  },
+  accelRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    marginTop: Theme.spacing.xs,
+  },
+  accelCell: {
+    flex: 1,
   },
   streakAlertContainer: {
     marginVertical: 4,

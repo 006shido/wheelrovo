@@ -12,9 +12,10 @@ import {
 import { Calendar, Trash2, Globe, Play, Navigation } from 'lucide-react-native';
 import { Theme } from '../styles/theme';
 import { loadTrips, Trip } from '../utils/storage';
-import { formatDistance, formatDuration, formatSpeed } from '../utils/stats';
+import { formatDistance, formatDuration, formatSpeed, formatAcceleration } from '../utils/stats';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import WebMapView from '../components/WebMapView';
+import ScoreBar from '../components/ScoreBar';
 
 // Conditionally import native maps to avoid compilation crashes in web browsers
 let MapView: any;
@@ -268,6 +269,29 @@ export default function HistoryScreen({ refreshTrigger, onHistoryCleared }: Hist
                   </Text>
                 </View>
               </View>
+
+              {/* Driving performance breakdown — only present on trips saved
+                  after this feature shipped; older trips fall back gracefully. */}
+              {trip.safetyScore != null && trip.smoothnessScore != null && trip.comfortScore != null && (
+                <View style={styles.performanceCard}>
+                  <Text style={styles.performanceCardTitle}>DRIVING PERFORMANCE</Text>
+                  <ScoreBar label="SAFETY" score={trip.safetyScore} />
+                  <ScoreBar label="SMOOTHNESS" score={trip.smoothnessScore} />
+                  <ScoreBar label="COMFORT" score={trip.comfortScore} />
+                  <View style={styles.performanceMetaRow}>
+                    <Text style={styles.performanceMetaText}>
+                      Max accel {formatAcceleration(trip.maxAccelerationMs2 ?? 0)} m/s² · Max braking{' '}
+                      {formatAcceleration(trip.maxBrakingMs2 ?? 0)} m/s²
+                    </Text>
+                    {(trip.harshAccelerationEvents ?? 0) + (trip.harshBrakingEvents ?? 0) > 0 && (
+                      <Text style={styles.performanceMetaText}>
+                        {(trip.harshAccelerationEvents ?? 0) + (trip.harshBrakingEvents ?? 0)} harsh event
+                        {(trip.harshAccelerationEvents ?? 0) + (trip.harshBrakingEvents ?? 0) === 1 ? '' : 's'}
+                      </Text>
+                    )}
+                  </View>
+                </View>
+              )}
             </View>
           ))}
         </ScrollView>
@@ -479,6 +503,28 @@ const styles = StyleSheet.create({
     width: 1.5,
     height: 20,
     backgroundColor: Theme.colors.border,
+  },
+  performanceCard: {
+    marginTop: Theme.spacing.md,
+    padding: Theme.spacing.sm,
+    borderRadius: Theme.borderRadius.sm,
+    borderWidth: 1,
+    borderColor: Theme.colors.border,
+    backgroundColor: 'rgba(255,255,255,0.03)',
+  },
+  performanceCardTitle: {
+    color: Theme.colors.textMuted,
+    fontSize: 8,
+    fontWeight: 'bold',
+    letterSpacing: 1,
+    marginBottom: Theme.spacing.sm,
+  },
+  performanceMetaRow: {
+    marginTop: 4,
+  },
+  performanceMetaText: {
+    color: Theme.colors.textSecondary,
+    fontSize: 9,
   },
   emptyContainer: {
     flex: 1,
