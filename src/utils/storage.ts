@@ -242,3 +242,30 @@ export async function updateUserPassword(email: string, newPassword: string): Pr
   }
   return false;
 }
+
+export async function updateUserName(email: string, newName: string): Promise<UserProfile | null> {
+  try {
+    const formattedEmail = email.trim().toLowerCase();
+    const usersJson = await AsyncStorage.getItem(KEYS.USERS);
+    const users: UserAccount[] = usersJson ? JSON.parse(usersJson) : [];
+
+    const userIndex = users.findIndex((u) => u.email === formattedEmail);
+    if (userIndex === -1) return null;
+
+    users[userIndex].name = newName;
+    await AsyncStorage.setItem(KEYS.USERS, JSON.stringify(users));
+
+    // Keep the active session in sync so the new name shows up immediately
+    // without requiring a re-login.
+    const updatedProfile: UserProfile = {
+      name: users[userIndex].name,
+      email: users[userIndex].email,
+      driverType: users[userIndex].driverType,
+    };
+    await setCurrentUser(updatedProfile);
+    return updatedProfile;
+  } catch (error) {
+    console.error('Error updating user name:', error);
+    return null;
+  }
+}

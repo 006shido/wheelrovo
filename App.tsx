@@ -14,13 +14,14 @@ import DashboardScreen from './src/screens/DashboardScreen';
 import TrackingScreen from './src/screens/TrackingScreen';
 import HistoryScreen from './src/screens/HistoryScreen';
 import AuthScreen from './src/screens/AuthScreen';
-import { LayoutGrid, Navigation, History, Compass, User, LogOut } from 'lucide-react-native';
+import ProfileScreen from './src/screens/ProfileScreen';
+import { LayoutGrid, Navigation, History, Compass, User } from 'lucide-react-native';
 import { getCurrentUser, setCurrentUser, UserProfile } from './src/utils/storage';
 import { reconcileTripsOnLaunch } from './src/services/locationTask';
 import { startPeriodicSync } from './src/services/sync';
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState<'dashboard' | 'tracking' | 'history'>('dashboard');
+  const [activeTab, setActiveTab] = useState<'dashboard' | 'tracking' | 'history' | 'profile'>('dashboard');
   const [refreshTrigger, setRefreshTrigger] = useState(0);
   const [currentUser, setSessionUser] = useState<UserProfile | null>(null);
   const [authLoading, setAuthLoading] = useState(true);
@@ -77,13 +78,7 @@ export default function App() {
   const renderActiveScreen = () => {
     switch (activeTab) {
       case 'dashboard':
-        return (
-          <DashboardScreen
-            refreshTrigger={refreshTrigger}
-            onDataReset={handleTripCompleted}
-            onLogout={handleLogout}
-          />
-        );
+        return <DashboardScreen refreshTrigger={refreshTrigger} />;
       case 'tracking':
         return <TrackingScreen onTripCompleted={handleTripCompleted} userId={currentUser.email} />;
       case 'history':
@@ -91,6 +86,14 @@ export default function App() {
           <HistoryScreen
             refreshTrigger={refreshTrigger}
             onHistoryCleared={handleTripCompleted}
+          />
+        );
+      case 'profile':
+        return (
+          <ProfileScreen
+            onLogout={handleLogout}
+            onDataReset={handleTripCompleted}
+            onProfileUpdated={(updated) => setSessionUser(updated)}
           />
         );
       default:
@@ -113,17 +116,15 @@ export default function App() {
               WHEEL<Text style={styles.logoAccent}>ROVO</Text>
             </Text>
           </View>
-          
-          {/* User Profile Summary */}
-          <View style={styles.userSummary}>
+
+          {/* Quick identity glance — tap to jump to the Profile tab for
+              account settings, name/password changes, and logout. */}
+          <TouchableOpacity style={styles.userSummary} onPress={() => setActiveTab('profile')}>
             <View style={[styles.roleIndicatorDot, { backgroundColor: userRoleColor }]} />
             <Text style={styles.userNameText} numberOfLines={1}>
               {currentUser.name}
             </Text>
-            <TouchableOpacity onPress={handleLogout} style={styles.logoutBtn}>
-              <LogOut color={Theme.colors.danger} size={16} />
-            </TouchableOpacity>
-          </View>
+          </TouchableOpacity>
         </View>
       </SafeAreaView>
 
@@ -196,6 +197,27 @@ export default function App() {
             </Text>
             {activeTab === 'history' && <View style={styles.activeIndicator} />}
           </TouchableOpacity>
+
+          {/* Profile Tab */}
+          <TouchableOpacity
+            style={styles.tabButton}
+            onPress={() => setActiveTab('profile')}
+            activeOpacity={0.8}
+          >
+            <User
+              color={activeTab === 'profile' ? Theme.colors.primary : Theme.colors.textMuted}
+              size={22}
+            />
+            <Text
+              style={[
+                styles.tabLabel,
+                activeTab === 'profile' ? styles.tabLabelActive : styles.tabLabelInactive,
+              ]}
+            >
+              Profile
+            </Text>
+            {activeTab === 'profile' && <View style={styles.activeIndicator} />}
+          </TouchableOpacity>
         </View>
       </SafeAreaView>
     </View>
@@ -267,13 +289,7 @@ const styles = StyleSheet.create({
     color: Theme.colors.textPrimary,
     fontSize: 12,
     fontWeight: 'bold',
-    marginRight: 8,
     maxWidth: 90,
-  },
-  logoutBtn: {
-    paddingLeft: 4,
-    borderLeftWidth: 1,
-    borderLeftColor: Theme.colors.border,
   },
   contentContainer: {
     flex: 1,
