@@ -15,13 +15,14 @@ import TrackingScreen from './src/screens/TrackingScreen';
 import HistoryScreen from './src/screens/HistoryScreen';
 import AuthScreen from './src/screens/AuthScreen';
 import ProfileScreen from './src/screens/ProfileScreen';
-import { LayoutGrid, Navigation, History, Compass, User } from 'lucide-react-native';
+import FriendsScreen from './src/screens/FriendsScreen';
+import { LayoutGrid, Navigation, History, Compass, User, Users } from 'lucide-react-native';
 import { getCurrentUser, setCurrentUser, UserProfile } from './src/utils/storage';
 import { reconcileTripsOnLaunch } from './src/services/locationTask';
 import { startPeriodicSync } from './src/services/sync';
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState<'dashboard' | 'tracking' | 'history' | 'profile'>('dashboard');
+  const [activeTab, setActiveTab] = useState<'dashboard' | 'tracking' | 'history' | 'friends' | 'profile'>('dashboard');
   const [refreshTrigger, setRefreshTrigger] = useState(0);
   const [currentUser, setSessionUser] = useState<UserProfile | null>(null);
   const [authLoading, setAuthLoading] = useState(true);
@@ -88,6 +89,8 @@ export default function App() {
             onHistoryCleared={handleTripCompleted}
           />
         );
+      case 'friends':
+        return <FriendsScreen />;
       case 'profile':
         return (
           <ProfileScreen
@@ -196,6 +199,27 @@ export default function App() {
               History Logs
             </Text>
             {activeTab === 'history' && <View style={styles.activeIndicator} />}
+          </TouchableOpacity>
+
+          {/* Friends Tab */}
+          <TouchableOpacity
+            style={styles.tabButton}
+            onPress={() => setActiveTab('friends')}
+            activeOpacity={0.8}
+          >
+            <Users
+              color={activeTab === 'friends' ? Theme.colors.primary : Theme.colors.textMuted}
+              size={22}
+            />
+            <Text
+              style={[
+                styles.tabLabel,
+                activeTab === 'friends' ? styles.tabLabelActive : styles.tabLabelInactive,
+              ]}
+            >
+              Friends
+            </Text>
+            {activeTab === 'friends' && <View style={styles.activeIndicator} />}
           </TouchableOpacity>
 
           {/* Profile Tab */}

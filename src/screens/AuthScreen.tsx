@@ -32,6 +32,7 @@ export default function AuthScreen({ onAuthSuccess }: AuthScreenProps) {
   
   // Credentials state
   const [name, setName] = useState('');
+  const [username, setUsername] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [driverType, setDriverType] = useState<DriverRole>('Casual');
@@ -61,6 +62,17 @@ export default function AuthScreen({ onAuthSuccess }: AuthScreenProps) {
     if (mode === 'register' && !name) {
       Alert.alert('Required Field', 'Please enter your driver name.');
       return;
+    }
+
+    if (mode === 'register') {
+      const usernamePattern = /^[a-z0-9_]{3,20}$/i;
+      if (!usernamePattern.test(username.trim())) {
+        Alert.alert(
+          'Invalid Username',
+          'Username must be 3-20 characters, using only letters, numbers, and underscores.'
+        );
+        return;
+      }
     }
 
     setLoading(true);
@@ -93,6 +105,7 @@ export default function AuthScreen({ onAuthSuccess }: AuthScreenProps) {
             const userProfile: UserProfile = {
               name: existing ? existing.name : data.user.email?.split('@')[0] || 'Driver',
               email: formattedEmail,
+              username: existing ? existing.username : (data.user.email?.split('@')[0] || 'driver').toLowerCase(),
               driverType: existing ? existing.driverType : 'Casual',
             };
             await setCurrentUser(userProfile);
@@ -103,13 +116,20 @@ export default function AuthScreen({ onAuthSuccess }: AuthScreenProps) {
       } else {
         // --- SIGN UP / REGISTRATION FLOW (OTP GATE) ---
         if (isDemoMode) {
-          // Check if email already exists
+          // Check if email or username already exists
           const usersJson = await AsyncStorage.getItem('@wheelrovo:registered_users');
           const users = usersJson ? JSON.parse(usersJson) : [];
-          const exists = users.some((u: any) => u.email === formattedEmail);
-          if (exists) {
+          const formattedUsername = username.trim().toLowerCase();
+          const emailExists = users.some((u: any) => u.email === formattedEmail);
+          if (emailExists) {
             setLoading(false);
             Alert.alert('Email Registered', 'This email is already registered. Please sign in.');
+            return;
+          }
+          const usernameExists = users.some((u: any) => u.username?.toLowerCase() === formattedUsername);
+          if (usernameExists) {
+            setLoading(false);
+            Alert.alert('Username Taken', 'That username is already in use. Please choose another.');
             return;
           }
 
@@ -154,17 +174,18 @@ export default function AuthScreen({ onAuthSuccess }: AuthScreenProps) {
       if (isDemoMode) {
         if (otpCode === generatedOtp) {
           // Register User officially in local database with password
-          const success = await registerUser(name, formattedEmail, password, driverType);
+          const success = await registerUser(name, formattedEmail, password, driverType, username);
           if (success) {
             const userProfile: UserProfile = {
               name,
               email: formattedEmail,
+              username: username.trim().toLowerCase(),
               driverType,
             };
             await setCurrentUser(userProfile);
             onAuthSuccess(userProfile);
           } else {
-            Alert.alert('Registration Error', 'An account already exists for this email.');
+            Alert.alert('Registration Error', 'An account already exists for this email or username.');
           }
         } else {
           Alert.alert('Incorrect Code', 'The code you entered is incorrect. Please check and try again.');
@@ -183,11 +204,22 @@ export default function AuthScreen({ onAuthSuccess }: AuthScreenProps) {
 
         if (data && data.session) {
           // Register in our local mock database metadata
-          await registerUser(name, formattedEmail, password, driverType);
+          await registerUser(name, formattedEmail, password, driverType, username);
+
+          // Mirror the profile to Supabase too, so it's searchable by other
+          // users once friends/social features are wired up server-side.
+          await supabase.from('profiles').upsert({
+            id: data.session.user.id,
+            email: formattedEmail,
+            username: username.trim().toLowerCase(),
+            display_name: name,
+            driver_type: driverType,
+          });
 
           const userProfile: UserProfile = {
             name,
             email: formattedEmail,
+            username: username.trim().toLowerCase(),
             driverType,
           };
           await setCurrentUser(userProfile);
@@ -254,6 +286,23 @@ export default function AuthScreen({ onAuthSuccess }: AuthScreenProps) {
                     value={name}
                     onChangeText={setName}
                     onFocus={() => setFocusedField('name')}
+                    onBlur={() => setFocusedField(null)}
+                  />
+                </View>
+              )}
+
+              {mode === 'register' && (
+                <View style={styles.inputWrapper}>
+                  <Text style={styles.label}>Username</Text>
+                  <TextInput
+                    style={[styles.input, focusedField === 'username' && styles.inputFocused]}
+                    placeholder="how friends will find you"
+                    placeholderTextColor={Theme.colors.textMuted}
+                    autoCapitalize="none"
+                    autoCorrect={false}
+                    value={username}
+                    onChangeText={(text) => setUsername(text.replace(/[^a-zA-Z0-9_]/g, ''))}
+                    onFocus={() => setFocusedField('username')}
                     onBlur={() => setFocusedField(null)}
                   />
                 </View>

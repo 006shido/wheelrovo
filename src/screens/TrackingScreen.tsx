@@ -17,6 +17,7 @@ import { SIMULATED_ROUTE } from '../utils/mockData';
 import { saveTrip, loadDriverState, saveDriverState, loadCompletedTasks, saveCompletedTasks, DriverState, Trip } from '../utils/storage';
 import WebMapView from '../components/WebMapView';
 import ScoreBar from '../components/ScoreBar';
+import { pushTripSummary } from '../utils/friends';
 import {
   requestBackgroundLocationPermissions,
   startBackgroundTracking,
@@ -353,6 +354,9 @@ export default function TrackingScreen({ onTripCompleted, userId }: TrackingScre
     };
 
     await saveTrip(newTrip);
+    // Best-effort — friends can't see this trip until real Supabase is wired
+    // up, but this keeps the remote `trips` table current from day one.
+    pushTripSummary(newTrip, userId).catch((e) => console.error('pushTripSummary failed', e));
 
     // Load current driver progress
     const driverState = await loadDriverState();

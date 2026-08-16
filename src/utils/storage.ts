@@ -31,6 +31,7 @@ export interface DriverState {
 export interface UserProfile {
   name: string;
   email: string;
+  username: string;
   driverType: string; // e.g., Casual, Delivery, Trucker, Racer
 }
 
@@ -52,20 +53,25 @@ export async function registerUser(
   name: string,
   email: string,
   password: string,
-  driverType: string
+  driverType: string,
+  username: string
 ): Promise<boolean> {
   try {
     const formattedEmail = email.trim().toLowerCase();
+    const formattedUsername = username.trim().toLowerCase();
     const usersJson = await AsyncStorage.getItem(KEYS.USERS);
     const users: UserAccount[] = usersJson ? JSON.parse(usersJson) : [];
 
-    // Check if user already exists
-    const exists = users.some((u) => u.email === formattedEmail);
+    // Check if email or username is already taken
+    const exists = users.some(
+      (u) => u.email === formattedEmail || u.username.toLowerCase() === formattedUsername
+    );
     if (exists) return false;
 
     const newUser: UserAccount = {
       name,
       email: formattedEmail,
+      username: formattedUsername,
       passwordHash: password, // Store password simply for local validation
       driverType,
     };
@@ -90,6 +96,7 @@ export async function loginUser(email: string, password: string): Promise<UserPr
       const profile: UserProfile = {
         name: user.name,
         email: user.email,
+        username: user.username,
         driverType: user.driverType,
       };
       await setCurrentUser(profile);
@@ -208,6 +215,25 @@ export async function loadTrips(): Promise<Trip[]> {
   return [];
 }
 
+// Reads another user's locally-saved trips directly by email, bypassing the
+// "current session" lookup that loadTrips() uses. This is how the Friends
+// feature shows a friend's trip cards in demo mode, where there's no shared
+// server — it only finds trips if that friend's account was also registered
+// on this same device. Once real Supabase is wired up, the Friends screen
+// switches to a server query instead and this local fallback stops mattering.
+export async function loadTripsForEmail(email: string): Promise<Trip[]> {
+  try {
+    const formattedEmail = email.trim().toLowerCase();
+    const value = await AsyncStorage.getItem(`${KEYS.TRIPS}:${formattedEmail}`);
+    if (value) {
+      return JSON.parse(value);
+    }
+  } catch (error) {
+    console.error('Error loading trips for user:', error);
+  }
+  return [];
+}
+
 export async function clearAllData(): Promise<void> {
   try {
     const currentUser = await getCurrentUser();
@@ -260,6 +286,7 @@ export async function updateUserName(email: string, newName: string): Promise<Us
     const updatedProfile: UserProfile = {
       name: users[userIndex].name,
       email: users[userIndex].email,
+      username: users[userIndex].username,
       driverType: users[userIndex].driverType,
     };
     await setCurrentUser(updatedProfile);
@@ -267,5 +294,50 @@ export async function updateUserName(email: string, newName: string): Promise<Us
   } catch (error) {
     console.error('Error updating user name:', error);
     return null;
+  }
+}
+
+// --- LOCAL USER DIRECTORY (demo-mode stand-in for the Friends feature) ---
+//
+// In demo mode there's no shared server, so "search" and "friend" only work
+// across accounts registered on this same device/AsyncStorage — useful for
+// trying out the UI solo, but not a substitute for the real Supabase-backed
+// version once that's wired up (see supabase-schema.sql).
+
+function toProfile(user: UserAccount): UserProfile {
+  return { name: user.name, email: user.email, username: user.username, driverType: user.driverType };
+}
+
+export async function findUserByUsername(username: string): Promise<UserProfile | null> {
+  try {
+    const formatted = username.trim().toLowerCase();
+    const usersJson = await AsyncStorage.getItem(KEYS.USERS);
+    const users: UserAccount[] = usersJson ? JSON.parse(usersJson) : [];
+    const match = users.find((u) => u.username.toLowerCase() === formatted);
+    return match ? toProfile(match) : null;
+  } catch (error) {
+    console.error('Error finding user by username:', error);
+    return null;
+  }
+}
+
+export async function searchLocalUsersByUsername(
+  query: string,
+  excludeEmail: string
+): Promise<UserProfile[]> {
+  try {
+    const formattedQuery = query.trim().toLowerCase();
+    if (!formattedQuery) return [];
+    const usersJson = await AsyncStorage.getItem(KEYS.USERS);
+    const users: UserAccount[] = usersJson ? JSON.parse(usersJson) : [];
+    return users
+      .filter(
+        (u) => u.email !== excludeEmail.trim().toLowerCase() && u.username.toLowerCase().includes(formattedQuery)
+      )
+      .slice(0, 20)
+      .map(toProfile);
+  } catch (error) {
+    console.error('Error searching local users:', error);
+    return [];
   }
 }
