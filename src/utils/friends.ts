@@ -3,7 +3,9 @@ import { isDemoMode, supabase } from './supabase';
 import {
   UserProfile,
   Trip,
+  DriverState,
   loadTripsForEmail,
+  loadDriverStateForEmail,
   findUserByUsername,
   searchLocalUsersByUsername,
 } from './storage';
@@ -313,6 +315,89 @@ export async function pushTripSummary(trip: Trip, userEmail: string): Promise<vo
   if (error) {
     console.error('[friends] pushTripSummary error', error.message);
   }
+}
+
+/**
+ * Pushes current XP/level to the remote `profiles` row so friends' Community
+ * leaderboard can rank by it. No-op in demo mode (loadDriverStateForEmail
+ * reads local storage directly there instead).
+ */
+export async function pushDriverStats(userEmail: string, state: DriverState): Promise<void> {
+  if (isDemoMode || !supabase) return;
+
+  const { error } = await supabase
+    .from('profiles')
+    .update({ xp: state.xp, level: state.level })
+    .eq('email', userEmail.trim().toLowerCase());
+
+  if (error) {
+    console.error('[friends] pushDriverStats error', error.message);
+  }
+}
+
+export interface LeaderboardEntry {
+  user: UserProfile;
+  isSelf: boolean;
+  xp: number;
+  level: number;
+  totalDistanceKm: number;
+}
+
+/**
+ * Ranking data for the current user plus their accepted friends. Demo mode
+ * reads everything from local device storage (so it only reflects accounts
+ * registered on this same device); real mode reads profiles.xp/level plus a
+ * sum over the shared `trips` table, both gated by the same friendship RLS
+ * used everywhere else.
+ */
+export async function getLeaderboard(currentUser: UserProfile): Promise<LeaderboardEntry[]> {
+  const friends = await getFriends(currentUser.email);
+  const people: UserProfile[] = [currentUser, ...friends.map((f) => f.user)];
+
+  if (isDemoMode || !supabase) {
+    const entries = await Promise.all(
+      people.map(async (user) => {
+        const [state, trips] = await Promise.all([
+          loadDriverStateForEmail(user.email),
+          loadTripsForEmail(user.email),
+        ]);
+        return {
+          user,
+          isSelf: user.email === currentUser.email,
+          xp: state.xp,
+          level: state.level,
+          totalDistanceKm: trips.reduce((sum, t) => sum + t.distance, 0),
+        };
+      })
+    );
+    return entries;
+  }
+
+  const emails = people.map((p) => p.email);
+  const [{ data: profileRows, error: profileError }, { data: tripRows, error: tripError }] = await Promise.all([
+    supabase.from('profiles').select('email, xp, level').in('email', emails),
+    supabase.from('trips').select('user_email, distance_km').in('user_email', emails),
+  ]);
+
+  if (profileError) console.error('[friends] leaderboard profiles error', profileError.message);
+  if (tripError) console.error('[friends] leaderboard trips error', tripError.message);
+
+  const distanceByEmail = new Map<string, number>();
+  for (const row of (tripRows ?? []) as any[]) {
+    distanceByEmail.set(row.user_email, (distanceByEmail.get(row.user_email) ?? 0) + row.distance_km);
+  }
+  const statsByEmail = new Map<string, { xp: number; level: number }>();
+  for (const row of (profileRows ?? []) as any[]) {
+    statsByEmail.set(row.email, { xp: row.xp ?? 0, level: row.level ?? 1 });
+  }
+
+  return people.map((user) => ({
+    user,
+    isSelf: user.email === currentUser.email,
+    xp: statsByEmail.get(user.email)?.xp ?? 0,
+    level: statsByEmail.get(user.email)?.level ?? 1,
+    totalDistanceKm: distanceByEmail.get(user.email) ?? 0,
+  }));
 }
 
 /**

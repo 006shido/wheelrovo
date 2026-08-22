@@ -10,7 +10,7 @@ import {
   TextInput,
   ActivityIndicator,
 } from 'react-native';
-import { User, Key, Edit3, ArrowLeft, Shield, RotateCcw, LogOut, Check, X } from 'lucide-react-native';
+import { User, Key, Edit3, ArrowLeft, Shield, RotateCcw, LogOut, Check, X, Settings, Users, ChevronRight } from 'lucide-react-native';
 import { Theme } from '../styles/theme';
 import { isDemoMode, supabase } from '../utils/supabase';
 import {
@@ -20,6 +20,7 @@ import {
   clearAllData,
   UserProfile,
 } from '../utils/storage';
+import FriendsScreen from './FriendsScreen';
 
 interface ProfileScreenProps {
   onLogout: () => void;
@@ -30,6 +31,7 @@ interface ProfileScreenProps {
 export default function ProfileScreen({ onLogout, onDataReset, onProfileUpdated }: ProfileScreenProps) {
   const [profile, setProfile] = useState<UserProfile | null>(null);
   const [loading, setLoading] = useState(true);
+  const [view, setView] = useState<'main' | 'settings' | 'friends'>('main');
 
   // Change name flow
   const [isEditingName, setIsEditingName] = useState(false);
@@ -198,6 +200,140 @@ export default function ProfileScreen({ onLogout, onDataReset, onProfileUpdated 
     );
   }
 
+  // --- Convoy sub-view: reuses the full Friends screen as-is ---
+  if (view === 'friends') {
+    return (
+      <View style={styles.subViewContainer}>
+        <SafeAreaView style={styles.subViewHeaderSafe}>
+          <View style={styles.subViewHeader}>
+            <TouchableOpacity style={styles.subViewBackBtn} onPress={() => setView('main')}>
+              <ArrowLeft color={Theme.colors.textPrimary} size={20} />
+            </TouchableOpacity>
+            <Text style={styles.subViewTitle}>FRIENDS</Text>
+            <View style={{ width: 32 }} />
+          </View>
+        </SafeAreaView>
+        <FriendsScreen />
+      </View>
+    );
+  }
+
+  // --- Settings sub-view: Security & Password, then Reset All Data ---
+  if (view === 'settings') {
+    return (
+      <SafeAreaView style={styles.safeContainer}>
+        <View style={styles.subViewHeader}>
+          <TouchableOpacity style={styles.subViewBackBtn} onPress={() => setView('main')}>
+            <ArrowLeft color={Theme.colors.textPrimary} size={20} />
+          </TouchableOpacity>
+          <Text style={styles.subViewTitle}>SETTINGS</Text>
+          <View style={{ width: 32 }} />
+        </View>
+
+        <ScrollView contentContainerStyle={styles.container}>
+          {/* Change Password Panel */}
+          <View style={styles.settingsCard}>
+            <TouchableOpacity
+              style={styles.settingsHeader}
+              onPress={() => {
+                setIsChangingPassword(!isChangingPassword);
+                setPasswordStep('input');
+                setNewPassword('');
+              }}
+            >
+              <View style={styles.settingsHeaderLeft}>
+                <Key color={Theme.colors.primary} size={18} />
+                <Text style={styles.settingsTitle}>SECURITY & PASSWORD</Text>
+              </View>
+              <Text style={styles.expandText}>{isChangingPassword ? 'COLLAPSE' : 'EXPAND'}</Text>
+            </TouchableOpacity>
+
+            {isChangingPassword && (
+              <View style={styles.settingsContent}>
+                {passwordStep === 'input' ? (
+                  <View>
+                    <Text style={styles.label}>ENTER NEW PASSWORD</Text>
+                    <TextInput
+                      style={styles.passwordInput}
+                      placeholder="Min 6 characters"
+                      placeholderTextColor={Theme.colors.textMuted}
+                      secureTextEntry
+                      value={newPassword}
+                      onChangeText={setNewPassword}
+                    />
+                    <TouchableOpacity
+                      style={styles.updateBtn}
+                      onPress={handleRequestPasswordChange}
+                      disabled={pwdLoading}
+                      activeOpacity={0.8}
+                    >
+                      {pwdLoading ? (
+                        <ActivityIndicator size="small" color="#000000" />
+                      ) : (
+                        <Text style={styles.updateBtnText}>SEND UPDATE OTP CODE</Text>
+                      )}
+                    </TouchableOpacity>
+                  </View>
+                ) : (
+                  <View>
+                    {isDemoMode && (
+                      <View style={styles.demoNoticeCard}>
+                        <Shield color={Theme.colors.primary} size={16} />
+                        <View style={styles.demoNoticeTextContainer}>
+                          <Text style={styles.demoNoticeTitle}>[DEMO MODE] PASSWORD UPDATE OTP</Text>
+                          <Text style={styles.demoNoticeCode}>{generatedPwdOtp}</Text>
+                        </View>
+                      </View>
+                    )}
+
+                    <TouchableOpacity style={styles.backBtn} onPress={() => setPasswordStep('input')}>
+                      <ArrowLeft color={Theme.colors.textSecondary} size={12} />
+                      <Text style={styles.backBtnText}>Back to password input</Text>
+                    </TouchableOpacity>
+
+                    <Text style={styles.label}>ENTER 6-DIGIT VERIFICATION CODE</Text>
+                    <TextInput
+                      style={styles.otpInput}
+                      placeholder="000000"
+                      placeholderTextColor={Theme.colors.textMuted}
+                      keyboardType="number-pad"
+                      maxLength={6}
+                      value={pwdOtpCode}
+                      onChangeText={setPwdOtpCode}
+                    />
+                    <TouchableOpacity
+                      style={styles.updateBtn}
+                      onPress={handleVerifyPasswordOtp}
+                      disabled={pwdLoading}
+                      activeOpacity={0.8}
+                    >
+                      {pwdLoading ? (
+                        <ActivityIndicator size="small" color="#000000" />
+                      ) : (
+                        <Text style={styles.updateBtnText}>VERIFY & UPDATE PASSWORD</Text>
+                      )}
+                    </TouchableOpacity>
+                  </View>
+                )}
+              </View>
+            )}
+          </View>
+
+          {/* Reset All Data — below Security & Password, as its own card */}
+          <View style={styles.settingsCard}>
+            <TouchableOpacity style={styles.accountActionRow} onPress={resetAllData}>
+              <View style={styles.settingsHeaderLeft}>
+                <RotateCcw color={Theme.colors.textSecondary} size={18} />
+                <Text style={styles.settingsTitle}>RESET ALL DATA</Text>
+              </View>
+            </TouchableOpacity>
+          </View>
+        </ScrollView>
+      </SafeAreaView>
+    );
+  }
+
+  // --- Main view ---
   return (
     <SafeAreaView style={styles.safeContainer}>
       <ScrollView contentContainerStyle={styles.container}>
@@ -251,109 +387,34 @@ export default function ProfileScreen({ onLogout, onDataReset, onProfileUpdated 
                 </View>
               )}
               <Text style={styles.driverEmail}>{profile ? profile.email : ''}</Text>
+              {profile?.username && <Text style={styles.driverUsername}>@{profile.username}</Text>}
             </View>
           </View>
         </View>
 
-        {/* Change Password Panel */}
+        {/* Menu */}
         <View style={styles.settingsCard}>
-          <TouchableOpacity
-            style={styles.settingsHeader}
-            onPress={() => {
-              setIsChangingPassword(!isChangingPassword);
-              setPasswordStep('input');
-              setNewPassword('');
-            }}
-          >
+          <TouchableOpacity style={styles.menuRow} onPress={() => setView('friends')}>
             <View style={styles.settingsHeaderLeft}>
-              <Key color={Theme.colors.primary} size={18} />
-              <Text style={styles.settingsTitle}>SECURITY & PASSWORD</Text>
+              <Users color={Theme.colors.primary} size={18} />
+              <Text style={styles.settingsTitle}>FRIENDS</Text>
             </View>
-            <Text style={styles.expandText}>{isChangingPassword ? 'COLLAPSE' : 'EXPAND'}</Text>
-          </TouchableOpacity>
-
-          {isChangingPassword && (
-            <View style={styles.settingsContent}>
-              {passwordStep === 'input' ? (
-                <View>
-                  <Text style={styles.label}>ENTER NEW PASSWORD</Text>
-                  <TextInput
-                    style={styles.passwordInput}
-                    placeholder="Min 6 characters"
-                    placeholderTextColor={Theme.colors.textMuted}
-                    secureTextEntry
-                    value={newPassword}
-                    onChangeText={setNewPassword}
-                  />
-                  <TouchableOpacity
-                    style={styles.updateBtn}
-                    onPress={handleRequestPasswordChange}
-                    disabled={pwdLoading}
-                    activeOpacity={0.8}
-                  >
-                    {pwdLoading ? (
-                      <ActivityIndicator size="small" color="#000000" />
-                    ) : (
-                      <Text style={styles.updateBtnText}>SEND UPDATE OTP CODE</Text>
-                    )}
-                  </TouchableOpacity>
-                </View>
-              ) : (
-                <View>
-                  {isDemoMode && (
-                    <View style={styles.demoNoticeCard}>
-                      <Shield color={Theme.colors.primary} size={16} />
-                      <View style={styles.demoNoticeTextContainer}>
-                        <Text style={styles.demoNoticeTitle}>[DEMO MODE] PASSWORD UPDATE OTP</Text>
-                        <Text style={styles.demoNoticeCode}>{generatedPwdOtp}</Text>
-                      </View>
-                    </View>
-                  )}
-
-                  <TouchableOpacity style={styles.backBtn} onPress={() => setPasswordStep('input')}>
-                    <ArrowLeft color={Theme.colors.textSecondary} size={12} />
-                    <Text style={styles.backBtnText}>Back to password input</Text>
-                  </TouchableOpacity>
-
-                  <Text style={styles.label}>ENTER 6-DIGIT VERIFICATION CODE</Text>
-                  <TextInput
-                    style={styles.otpInput}
-                    placeholder="000000"
-                    placeholderTextColor={Theme.colors.textMuted}
-                    keyboardType="number-pad"
-                    maxLength={6}
-                    value={pwdOtpCode}
-                    onChangeText={setPwdOtpCode}
-                  />
-                  <TouchableOpacity
-                    style={styles.updateBtn}
-                    onPress={handleVerifyPasswordOtp}
-                    disabled={pwdLoading}
-                    activeOpacity={0.8}
-                  >
-                    {pwdLoading ? (
-                      <ActivityIndicator size="small" color="#000000" />
-                    ) : (
-                      <Text style={styles.updateBtnText}>VERIFY & UPDATE PASSWORD</Text>
-                    )}
-                  </TouchableOpacity>
-                </View>
-              )}
-            </View>
-          )}
-        </View>
-
-        {/* Account Actions */}
-        <View style={styles.settingsCard}>
-          <TouchableOpacity style={styles.accountActionRow} onPress={resetAllData}>
-            <View style={styles.settingsHeaderLeft}>
-              <RotateCcw color={Theme.colors.textSecondary} size={18} />
-              <Text style={styles.settingsTitle}>RESET ALL DATA</Text>
-            </View>
+            <ChevronRight color={Theme.colors.textMuted} size={18} />
           </TouchableOpacity>
 
           <View style={styles.accountActionDivider} />
 
+          <TouchableOpacity style={styles.menuRow} onPress={() => setView('settings')}>
+            <View style={styles.settingsHeaderLeft}>
+              <Settings color={Theme.colors.primary} size={18} />
+              <Text style={styles.settingsTitle}>SETTINGS</Text>
+            </View>
+            <ChevronRight color={Theme.colors.textMuted} size={18} />
+          </TouchableOpacity>
+        </View>
+
+        {/* Log Out */}
+        <View style={styles.settingsCard}>
           <TouchableOpacity style={styles.accountActionRow} onPress={confirmLogout}>
             <View style={styles.settingsHeaderLeft}>
               <LogOut color={Theme.colors.danger} size={18} />
@@ -457,6 +518,11 @@ const styles = StyleSheet.create({
     color: Theme.colors.textSecondary,
     fontSize: 11,
     marginTop: 4,
+  },
+  driverUsername: {
+    color: Theme.colors.textMuted,
+    fontSize: 11,
+    marginTop: 2,
   },
   settingsCard: {
     backgroundColor: Theme.colors.cardBackground,
@@ -584,5 +650,39 @@ const styles = StyleSheet.create({
     height: 1.5,
     backgroundColor: Theme.colors.border,
     marginVertical: Theme.spacing.md,
+  },
+  menuRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 4,
+  },
+  subViewContainer: {
+    flex: 1,
+    backgroundColor: Theme.colors.background,
+  },
+  subViewHeaderSafe: {
+    backgroundColor: Theme.colors.background,
+  },
+  subViewHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: Theme.spacing.md,
+    paddingVertical: Theme.spacing.md,
+    borderBottomWidth: 1.5,
+    borderBottomColor: Theme.colors.border,
+  },
+  subViewBackBtn: {
+    width: 32,
+    height: 32,
+    justifyContent: 'center',
+    alignItems: 'flex-start',
+  },
+  subViewTitle: {
+    color: Theme.colors.textPrimary,
+    fontSize: 13,
+    fontWeight: 'bold',
+    letterSpacing: 1,
   },
 });

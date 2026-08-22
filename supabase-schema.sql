@@ -17,6 +17,8 @@ create table if not exists profiles (
   username text unique not null,
   display_name text not null,
   driver_type text not null default 'Casual',
+  xp integer not null default 0,
+  level integer not null default 1,
   created_at timestamptz not null default now()
 );
 

@@ -234,6 +234,21 @@ export async function loadTripsForEmail(email: string): Promise<Trip[]> {
   return [];
 }
 
+// Same idea as loadTripsForEmail — reads another local account's XP/level
+// directly, for the Community leaderboard in demo mode.
+export async function loadDriverStateForEmail(email: string): Promise<DriverState> {
+  try {
+    const formattedEmail = email.trim().toLowerCase();
+    const value = await AsyncStorage.getItem(`${KEYS.DRIVER_STATE}:${formattedEmail}`);
+    if (value) {
+      return JSON.parse(value);
+    }
+  } catch (error) {
+    console.error('Error loading driver state for user:', error);
+  }
+  return { xp: 0, level: 1, streak: 0, lastLoginDate: null };
+}
+
 export async function clearAllData(): Promise<void> {
   try {
     const currentUser = await getCurrentUser();

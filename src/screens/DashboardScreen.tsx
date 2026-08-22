@@ -7,16 +7,19 @@ import {
   ScrollView,
   SafeAreaView,
 } from 'react-native';
-import { Flame, Trophy, CheckCircle, Star, Lock } from 'lucide-react-native';
+import { Flame, Trophy, CheckCircle, Star, Lock, Gauge, Route, Crown } from 'lucide-react-native';
 import { Theme } from '../styles/theme';
 import {
   loadDriverState,
   loadCompletedTasks,
   loadTrips,
+  getCurrentUser,
   DriverState,
 } from '../utils/storage';
 import { DEFAULT_TASKS, MILESTONES, Task } from '../utils/mockData';
 import { computeAchievementProgress, AchievementProgress } from '../utils/achievements';
+import { getLeaderboard, LeaderboardEntry } from '../utils/friends';
+import { formatDistance } from '../utils/stats';
 
 interface DashboardScreenProps {
   refreshTrigger?: number;
@@ -31,6 +34,10 @@ export default function DashboardScreen({ refreshTrigger }: DashboardScreenProps
   });
   const [tasks, setTasks] = useState<Task[]>(DEFAULT_TASKS);
   const [achievements, setAchievements] = useState<AchievementProgress[]>([]);
+  const [lastTripKm, setLastTripKm] = useState<number | null>(null);
+  const [totalTrips, setTotalTrips] = useState(0);
+  const [leaderboard, setLeaderboard] = useState<LeaderboardEntry[]>([]);
+  const [leaderboardMode, setLeaderboardMode] = useState<'xp' | 'distance'>('xp');
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -55,6 +62,14 @@ export default function DashboardScreen({ refreshTrigger }: DashboardScreenProps
 
     const trips = await loadTrips();
     setAchievements(computeAchievementProgress(trips));
+    setTotalTrips(trips.length);
+    setLastTripKm(trips.length > 0 ? trips[0].distance : null);
+
+    const currentUser = await getCurrentUser();
+    if (currentUser) {
+      const board = await getLeaderboard(currentUser);
+      setLeaderboard(board);
+    }
 
     setDriverState(state);
     setTasks(updatedTasks);
@@ -81,6 +96,90 @@ export default function DashboardScreen({ refreshTrigger }: DashboardScreenProps
   return (
     <SafeAreaView style={styles.safeContainer}>
       <ScrollView contentContainerStyle={styles.container}>
+        {/* Quick Stats */}
+        <View style={styles.quickStatsRow}>
+          <View style={styles.quickStatCard}>
+            <Route color={Theme.colors.primary} size={18} />
+            <Text style={styles.quickStatValue}>
+              {lastTripKm != null ? `${formatDistance(lastTripKm)} KM` : '—'}
+            </Text>
+            <Text style={styles.quickStatLabel}>LAST TRIP</Text>
+          </View>
+          <View style={styles.quickStatCard}>
+            <Gauge color={Theme.colors.primary} size={18} />
+            <Text style={styles.quickStatValue}>{totalTrips}</Text>
+            <Text style={styles.quickStatLabel}>TOTAL TRIPS</Text>
+          </View>
+        </View>
+
+        {/* Leaderboard */}
+        <View style={styles.leaderboardCard}>
+          <View style={styles.leaderboardHeader}>
+            <View style={styles.settingsHeaderLeft}>
+              <Crown color={Theme.colors.primary} size={18} />
+              <Text style={styles.sectionHeader}>LEADERBOARD</Text>
+            </View>
+            <View style={styles.leaderboardToggle}>
+              <TouchableOpacity
+                style={[styles.leaderboardToggleBtn, leaderboardMode === 'xp' && styles.leaderboardToggleBtnActive]}
+                onPress={() => setLeaderboardMode('xp')}
+              >
+                <Text
+                  style={[
+                    styles.leaderboardToggleText,
+                    leaderboardMode === 'xp' && styles.leaderboardToggleTextActive,
+                  ]}
+                >
+                  LEVEL
+                </Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[
+                  styles.leaderboardToggleBtn,
+                  leaderboardMode === 'distance' && styles.leaderboardToggleBtnActive,
+                ]}
+                onPress={() => setLeaderboardMode('distance')}
+              >
+                <Text
+                  style={[
+                    styles.leaderboardToggleText,
+                    leaderboardMode === 'distance' && styles.leaderboardToggleTextActive,
+                  ]}
+                >
+                  DISTANCE
+                </Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+
+          {leaderboard.length <= 1 ? (
+            <Text style={styles.leaderboardEmptyText}>
+              Add friends from Profile → Friends to see how you compare.
+            </Text>
+          ) : (
+            [...leaderboard]
+              .sort((a, b) =>
+                leaderboardMode === 'xp' ? b.xp - a.xp : b.totalDistanceKm - a.totalDistanceKm
+              )
+              .map((entry, index) => (
+                <View
+                  key={entry.user.email}
+                  style={[styles.leaderboardRow, entry.isSelf && styles.leaderboardRowSelf]}
+                >
+                  <Text style={styles.leaderboardRank}>#{index + 1}</Text>
+                  <Text style={styles.leaderboardName} numberOfLines={1}>
+                    {entry.isSelf ? 'You' : entry.user.name}
+                  </Text>
+                  <Text style={styles.leaderboardValue}>
+                    {leaderboardMode === 'xp'
+                      ? `Lvl ${entry.level} · ${entry.xp} XP`
+                      : `${formatDistance(entry.totalDistanceKm)} KM`}
+                  </Text>
+                </View>
+              ))
+          )}
+        </View>
+
         {/* Level Progress */}
         <View style={styles.levelCard}>
           <View style={styles.levelContainer}>
@@ -389,6 +488,105 @@ const styles = StyleSheet.create({
     fontWeight: 'bold',
     marginBottom: Theme.spacing.md,
     letterSpacing: 1,
+  },
+  quickStatsRow: {
+    flexDirection: 'row',
+    marginBottom: Theme.spacing.md,
+  },
+  quickStatCard: {
+    flex: 1,
+    backgroundColor: Theme.colors.cardBackground,
+    borderRadius: Theme.borderRadius.md,
+    borderWidth: 1.5,
+    borderColor: Theme.colors.border,
+    alignItems: 'center',
+    paddingVertical: Theme.spacing.md,
+    marginRight: Theme.spacing.sm,
+  },
+  quickStatValue: {
+    color: Theme.colors.textPrimary,
+    fontSize: 16,
+    fontWeight: 'bold',
+    marginTop: Theme.spacing.xs,
+  },
+  quickStatLabel: {
+    color: Theme.colors.textMuted,
+    fontSize: 8,
+    fontWeight: 'bold',
+    letterSpacing: 0.5,
+    marginTop: 2,
+  },
+  leaderboardCard: {
+    backgroundColor: Theme.colors.cardBackground,
+    borderRadius: Theme.borderRadius.md,
+    borderWidth: 1.5,
+    borderColor: Theme.colors.border,
+    padding: Theme.spacing.md,
+    marginBottom: Theme.spacing.md,
+  },
+  leaderboardHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: Theme.spacing.md,
+  },
+  settingsHeaderLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  leaderboardToggle: {
+    flexDirection: 'row',
+    borderWidth: 1,
+    borderColor: Theme.colors.border,
+    borderRadius: Theme.borderRadius.sm,
+    overflow: 'hidden',
+  },
+  leaderboardToggleBtn: {
+    paddingVertical: 4,
+    paddingHorizontal: Theme.spacing.sm,
+  },
+  leaderboardToggleBtnActive: {
+    backgroundColor: Theme.colors.primary,
+  },
+  leaderboardToggleText: {
+    color: Theme.colors.textMuted,
+    fontSize: 8,
+    fontWeight: 'bold',
+  },
+  leaderboardToggleTextActive: {
+    color: '#000',
+  },
+  leaderboardEmptyText: {
+    color: Theme.colors.textMuted,
+    fontSize: 11,
+    textAlign: 'center',
+    paddingVertical: Theme.spacing.sm,
+  },
+  leaderboardRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: Theme.spacing.sm,
+    borderTopWidth: 1,
+    borderTopColor: Theme.colors.border,
+  },
+  leaderboardRowSelf: {
+    backgroundColor: 'rgba(255,255,255,0.04)',
+  },
+  leaderboardRank: {
+    color: Theme.colors.textMuted,
+    fontSize: 11,
+    fontWeight: 'bold',
+    width: 28,
+  },
+  leaderboardName: {
+    color: Theme.colors.textPrimary,
+    fontSize: 12,
+    fontWeight: 'bold',
+    flex: 1,
+  },
+  leaderboardValue: {
+    color: Theme.colors.textSecondary,
+    fontSize: 11,
   },
   taskCard: {
     backgroundColor: Theme.colors.cardBackground,

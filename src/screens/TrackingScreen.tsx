@@ -17,7 +17,7 @@ import { SIMULATED_ROUTE } from '../utils/mockData';
 import { saveTrip, loadDriverState, saveDriverState, loadCompletedTasks, saveCompletedTasks, DriverState, Trip } from '../utils/storage';
 import WebMapView from '../components/WebMapView';
 import ScoreBar from '../components/ScoreBar';
-import { pushTripSummary } from '../utils/friends';
+import { pushTripSummary, pushDriverStats } from '../utils/friends';
 import {
   requestBackgroundLocationPermissions,
   startBackgroundTracking,
@@ -459,6 +459,7 @@ export default function TrackingScreen({ onTripCompleted, userId }: TrackingScre
       lastLoginDate: todayStr, // Mark logged in today
     };
     await saveDriverState(newDriverState);
+    pushDriverStats(userId, newDriverState).catch((e) => console.error('pushDriverStats failed', e));
 
     // Save summary details to display
     setLastTripSummary({
