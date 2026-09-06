@@ -16,6 +16,7 @@ import { Compass, Mail, Shield, ArrowLeft, RefreshCw, Eye, EyeOff, Lock, User } 
 import { Theme } from '../styles/theme';
 import { isDemoMode, supabase } from '../utils/supabase';
 import { registerUser, loginUser, UserProfile, setCurrentUser } from '../utils/storage';
+import { getAuthRedirectUrl, savePendingRegistration } from '../services/authLinking';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 interface AuthScreenProps {
@@ -23,7 +24,7 @@ interface AuthScreenProps {
 }
 
 type AuthMode = 'login' | 'register';
-type AuthStep = 'credentials' | 'otp';
+type AuthStep = 'credentials' | 'otp' | 'check-email';
 type DriverRole = 'Casual' | 'Delivery' | 'Trucker' | 'Racer';
 
 export default function AuthScreen({ onAuthSuccess }: AuthScreenProps) {
@@ -139,17 +140,29 @@ export default function AuthScreen({ onAuthSuccess }: AuthScreenProps) {
           setStep('otp');
           setOtpCode('');
         } else {
-          // Real Supabase Auth SignUp
+          // Real Supabase Auth SignUp — sends a confirmation LINK (not an
+          // OTP code) to the user's email, since template customization to
+          // OTP-style codes needs custom SMTP + a verified sending domain
+          // that this app doesn't require. Save the profile details now so
+          // they're still there when the user taps the link and lands back
+          // in the app, possibly after it was fully closed in the meantime.
           if (!supabase) return;
-          const { data, error } = await supabase.auth.signUp({
+
+          await savePendingRegistration({
+            name,
+            username: username.trim().toLowerCase(),
+            driverType,
+            email: formattedEmail,
+          });
+
+          const { error } = await supabase.auth.signUp({
             email: formattedEmail,
             password,
+            options: { emailRedirectTo: getAuthRedirectUrl() },
           });
           if (error) throw error;
 
-          Alert.alert('OTP Code Sent', 'A verification code has been sent to your email.');
-          setStep('otp');
-          setOtpCode('');
+          setStep('check-email');
         }
         setLoading(false);
       }
@@ -160,7 +173,9 @@ export default function AuthScreen({ onAuthSuccess }: AuthScreenProps) {
     }
   };
 
-  // Verify Registration OTP
+  // Verify Registration OTP — demo mode only. Real Supabase accounts finish
+  // signup via the email confirmation link instead (see the App-level deep
+  // link handler), so this never runs when isDemoMode is false.
   const handleVerifyRegisterOtp = async () => {
     if (otpCode.length !== 6) {
       Alert.alert('Invalid Code', 'Please enter the 6-digit verification code.');
@@ -171,51 +186,10 @@ export default function AuthScreen({ onAuthSuccess }: AuthScreenProps) {
     setLoading(true);
 
     try {
-      if (isDemoMode) {
-        if (otpCode === generatedOtp) {
-          // Register User officially in local database with password
-          const success = await registerUser(name, formattedEmail, password, driverType, username);
-          if (success) {
-            const userProfile: UserProfile = {
-              name,
-              email: formattedEmail,
-              username: username.trim().toLowerCase(),
-              driverType,
-            };
-            await setCurrentUser(userProfile);
-            onAuthSuccess(userProfile);
-          } else {
-            Alert.alert('Registration Error', 'An account already exists for this email or username.');
-          }
-        } else {
-          Alert.alert('Incorrect Code', 'The code you entered is incorrect. Please check and try again.');
-        }
-      } else {
-        // Real Supabase Auth OTP verification
-        if (!supabase) return;
-
-        const { data, error } = await supabase.auth.verifyOtp({
-          email: formattedEmail,
-          token: otpCode,
-          type: 'signup',
-        });
-
-        if (error) throw error;
-
-        if (data && data.session) {
-          // Register in our local mock database metadata
-          await registerUser(name, formattedEmail, password, driverType, username);
-
-          // Mirror the profile to Supabase too, so it's searchable by other
-          // users once friends/social features are wired up server-side.
-          await supabase.from('profiles').upsert({
-            id: data.session.user.id,
-            email: formattedEmail,
-            username: username.trim().toLowerCase(),
-            display_name: name,
-            driver_type: driverType,
-          });
-
+      if (otpCode === generatedOtp) {
+        // Register User officially in local database with password
+        const success = await registerUser(name, formattedEmail, password, driverType, username);
+        if (success) {
           const userProfile: UserProfile = {
             name,
             email: formattedEmail,
@@ -224,7 +198,11 @@ export default function AuthScreen({ onAuthSuccess }: AuthScreenProps) {
           };
           await setCurrentUser(userProfile);
           onAuthSuccess(userProfile);
+        } else {
+          Alert.alert('Registration Error', 'An account already exists for this email or username.');
         }
+      } else {
+        Alert.alert('Incorrect Code', 'The code you entered is incorrect. Please check and try again.');
       }
     } catch (err: any) {
       console.error('Verification Error:', err);
@@ -396,8 +374,8 @@ export default function AuthScreen({ onAuthSuccess }: AuthScreenProps) {
                 )}
               </TouchableOpacity>
             </View>
-          ) : (
-            /* Step 2: Verify Registration OTP */
+          ) : step === 'otp' ? (
+            /* Step 2 (demo mode): Verify Registration OTP */
             <View style={styles.card}>
               {isDemoMode && (
                 <View style={styles.demoNoticeCard}>
@@ -455,6 +433,40 @@ export default function AuthScreen({ onAuthSuccess }: AuthScreenProps) {
               >
                 <RefreshCw color={Theme.colors.textSecondary} size={12} />
                 <Text style={styles.resendText}>Resend code</Text>
+              </TouchableOpacity>
+            </View>
+          ) : (
+            /* Step 2 (real Supabase mode): Check Email */
+            <View style={styles.card}>
+              <TouchableOpacity style={styles.backBtn} onPress={() => setStep('credentials')}>
+                <ArrowLeft color={Theme.colors.textSecondary} size={14} />
+                <Text style={styles.backBtnText}>Back to credentials</Text>
+              </TouchableOpacity>
+
+              <View style={styles.otpHeader}>
+                <Mail color={Theme.colors.primary} size={28} style={{ marginBottom: Theme.spacing.md }} />
+                <Text style={styles.otpTitle}>Check your email</Text>
+                <Text style={styles.otpSubtitle}>
+                  We sent a confirmation link to{' '}
+                  <Text style={{ color: '#FFF', fontWeight: 'bold' }}>{email}</Text>. Tap it to finish
+                  creating your account — you'll land back here automatically.
+                </Text>
+              </View>
+
+              <TouchableOpacity
+                style={styles.resendBtn}
+                onPress={handleAuthSubmit}
+                disabled={loading}
+                activeOpacity={0.8}
+              >
+                {loading ? (
+                  <ActivityIndicator size="small" color={Theme.colors.textSecondary} />
+                ) : (
+                  <>
+                    <RefreshCw color={Theme.colors.textSecondary} size={12} />
+                    <Text style={styles.resendText}>Resend email</Text>
+                  </>
+                )}
               </TouchableOpacity>
             </View>
           )}

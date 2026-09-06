@@ -21,6 +21,8 @@ import {
   UserProfile,
 } from '../utils/storage';
 import FriendsScreen from './FriendsScreen';
+import { getAuthRedirectUrl } from '../services/authLinking';
+import { confirmAction } from '../utils/confirm';
 
 interface ProfileScreenProps {
   onLogout: () => void;
@@ -41,7 +43,7 @@ export default function ProfileScreen({ onLogout, onDataReset, onProfileUpdated 
   // Change password flow
   const [isChangingPassword, setIsChangingPassword] = useState(false);
   const [newPassword, setNewPassword] = useState('');
-  const [passwordStep, setPasswordStep] = useState<'input' | 'otp'>('input');
+  const [passwordStep, setPasswordStep] = useState<'input' | 'otp' | 'link-sent'>('input');
   const [pwdOtpCode, setPwdOtpCode] = useState('');
   const [generatedPwdOtp, setGeneratedPwdOtp] = useState(''); // Demo mode only
   const [pwdLoading, setPwdLoading] = useState(false);
@@ -84,18 +86,26 @@ export default function ProfileScreen({ onLogout, onDataReset, onProfileUpdated 
     }
   };
 
-  // --- PASSWORD UPDATE OTP FLOWS ---
+  // --- PASSWORD UPDATE ---
+  // Demo mode: same-session mock OTP flow, unchanged.
+  // Real mode: sends an email confirmation LINK instead (no OTP template
+  // without custom SMTP — see the note in AuthScreen). The new password
+  // itself is entered AFTER the link is tapped, in App.tsx's recovery-mode
+  // screen, once a real recovery session is active — not here, since this
+  // input would otherwise sit stale in memory during the round trip through
+  // the user's email app.
 
   const handleRequestPasswordChange = async () => {
-    if (!newPassword || newPassword.length < 6) {
-      Alert.alert('Invalid Password', 'Password must be at least 6 characters long.');
-      return;
-    }
     if (!profile) return;
 
     setPwdLoading(true);
     try {
       if (isDemoMode) {
+        if (!newPassword || newPassword.length < 6) {
+          Alert.alert('Invalid Password', 'Password must be at least 6 characters long.');
+          setPwdLoading(false);
+          return;
+        }
         // Generate mock OTP code for changing password
         const code = Math.floor(100000 + Math.random() * 900000).toString();
         setGeneratedPwdOtp(code);
@@ -103,16 +113,15 @@ export default function ProfileScreen({ onLogout, onDataReset, onProfileUpdated 
         setPwdOtpCode('');
       } else {
         if (!supabase) return;
-        const { error } = await supabase.auth.resetPasswordForEmail(profile.email);
+        const { error } = await supabase.auth.resetPasswordForEmail(profile.email, {
+          redirectTo: getAuthRedirectUrl(),
+        });
         if (error) throw error;
-
-        Alert.alert('OTP Code Sent', 'A password update code has been sent to your email.');
-        setPasswordStep('otp');
-        setPwdOtpCode('');
+        setPasswordStep('link-sent');
       }
     } catch (err: any) {
       console.error('Password change request error:', err);
-      Alert.alert('Error', err.message || 'Could not send verification code.');
+      Alert.alert('Error', err.message || 'Could not send the reset email.');
     } finally {
       setPwdLoading(false);
     }
@@ -127,39 +136,18 @@ export default function ProfileScreen({ onLogout, onDataReset, onProfileUpdated 
 
     setPwdLoading(true);
     try {
-      if (isDemoMode) {
-        if (pwdOtpCode === generatedPwdOtp) {
-          const success = await updateUserPassword(profile.email, newPassword);
-          if (success) {
-            Alert.alert('Password Updated', 'Your password has been changed successfully.');
-            setIsChangingPassword(false);
-            setNewPassword('');
-            setPasswordStep('input');
-          } else {
-            Alert.alert('Error', 'Could not update your password. Please try again.');
-          }
+      if (pwdOtpCode === generatedPwdOtp) {
+        const success = await updateUserPassword(profile.email, newPassword);
+        if (success) {
+          Alert.alert('Password Updated', 'Your password has been changed successfully.');
+          setIsChangingPassword(false);
+          setNewPassword('');
+          setPasswordStep('input');
         } else {
-          Alert.alert('Incorrect Code', 'The verification code you entered is incorrect.');
+          Alert.alert('Error', 'Could not update your password. Please try again.');
         }
       } else {
-        if (!supabase) return;
-
-        const { error: verifyError } = await supabase.auth.verifyOtp({
-          email: profile.email,
-          token: pwdOtpCode,
-          type: 'recovery',
-        });
-        if (verifyError) throw verifyError;
-
-        const { error: updateError } = await supabase.auth.updateUser({ password: newPassword });
-        if (updateError) throw updateError;
-
-        await updateUserPassword(profile.email, newPassword);
-
-        Alert.alert('Password Updated', 'Your password has been updated in Supabase.');
-        setIsChangingPassword(false);
-        setNewPassword('');
-        setPasswordStep('input');
+        Alert.alert('Incorrect Code', 'The verification code you entered is incorrect.');
       }
     } catch (err: any) {
       console.error('Password OTP verification error:', err);
@@ -170,24 +158,19 @@ export default function ProfileScreen({ onLogout, onDataReset, onProfileUpdated 
   };
 
   const resetAllData = () => {
-    Alert.alert('Reset All Data', 'This will erase your trips, XP, and tasks on this device. This cannot be undone.', [
-      { text: 'Cancel', style: 'cancel' },
-      {
-        text: 'Reset',
-        style: 'destructive',
-        onPress: async () => {
-          await clearAllData();
-          onDataReset();
-        },
-      },
-    ]);
+    confirmAction(
+      'Reset All Data',
+      'This will erase your trips, XP, and tasks on this device. This cannot be undone.',
+      'Reset',
+      async () => {
+        await clearAllData();
+        onDataReset();
+      }
+    );
   };
 
   const confirmLogout = () => {
-    Alert.alert('Log Out', 'Are you sure you want to log out?', [
-      { text: 'Cancel', style: 'cancel' },
-      { text: 'Log Out', style: 'destructive', onPress: onLogout },
-    ]);
+    confirmAction('Log Out', 'Are you sure you want to log out?', 'Log Out', onLogout);
   };
 
   if (loading) {
@@ -252,26 +235,71 @@ export default function ProfileScreen({ onLogout, onDataReset, onProfileUpdated 
               <View style={styles.settingsContent}>
                 {passwordStep === 'input' ? (
                   <View>
-                    <Text style={styles.label}>ENTER NEW PASSWORD</Text>
-                    <TextInput
-                      style={styles.passwordInput}
-                      placeholder="Min 6 characters"
-                      placeholderTextColor={Theme.colors.textMuted}
-                      secureTextEntry
-                      value={newPassword}
-                      onChangeText={setNewPassword}
-                    />
+                    {isDemoMode ? (
+                      <>
+                        <Text style={styles.label}>ENTER NEW PASSWORD</Text>
+                        <TextInput
+                          style={styles.passwordInput}
+                          placeholder="Min 6 characters"
+                          placeholderTextColor={Theme.colors.textMuted}
+                          secureTextEntry
+                          value={newPassword}
+                          onChangeText={setNewPassword}
+                        />
+                        <TouchableOpacity
+                          style={styles.updateBtn}
+                          onPress={handleRequestPasswordChange}
+                          disabled={pwdLoading}
+                          activeOpacity={0.8}
+                        >
+                          {pwdLoading ? (
+                            <ActivityIndicator size="small" color="#000000" />
+                          ) : (
+                            <Text style={styles.updateBtnText}>SEND UPDATE OTP CODE</Text>
+                          )}
+                        </TouchableOpacity>
+                      </>
+                    ) : (
+                      <>
+                        <Text style={styles.label}>
+                          We'll email you a link — tap it to choose a new password.
+                        </Text>
+                        <TouchableOpacity
+                          style={styles.updateBtn}
+                          onPress={handleRequestPasswordChange}
+                          disabled={pwdLoading}
+                          activeOpacity={0.8}
+                        >
+                          {pwdLoading ? (
+                            <ActivityIndicator size="small" color="#000000" />
+                          ) : (
+                            <Text style={styles.updateBtnText}>SEND PASSWORD RESET LINK</Text>
+                          )}
+                        </TouchableOpacity>
+                      </>
+                    )}
+                  </View>
+                ) : passwordStep === 'link-sent' ? (
+                  <View>
+                    <View style={styles.demoNoticeCard}>
+                      <Shield color={Theme.colors.primary} size={16} />
+                      <View style={styles.demoNoticeTextContainer}>
+                        <Text style={styles.demoNoticeTitle}>CHECK YOUR EMAIL</Text>
+                        <Text style={styles.linkSentText}>
+                          We sent a reset link to {profile?.email}. Tap it, then set your new password
+                          right there in the app.
+                        </Text>
+                      </View>
+                    </View>
                     <TouchableOpacity
-                      style={styles.updateBtn}
-                      onPress={handleRequestPasswordChange}
-                      disabled={pwdLoading}
-                      activeOpacity={0.8}
+                      style={styles.backBtn}
+                      onPress={() => {
+                        setPasswordStep('input');
+                        setIsChangingPassword(false);
+                      }}
                     >
-                      {pwdLoading ? (
-                        <ActivityIndicator size="small" color="#000000" />
-                      ) : (
-                        <Text style={styles.updateBtnText}>SEND UPDATE OTP CODE</Text>
-                      )}
+                      <ArrowLeft color={Theme.colors.textSecondary} size={12} />
+                      <Text style={styles.backBtnText}>Done</Text>
                     </TouchableOpacity>
                   </View>
                 ) : (
@@ -640,6 +668,12 @@ const styles = StyleSheet.create({
     fontWeight: 'bold',
     marginTop: 2,
     letterSpacing: 1.5,
+  },
+  linkSentText: {
+    color: Theme.colors.textSecondary,
+    fontSize: 11,
+    marginTop: 2,
+    lineHeight: 16,
   },
   accountActionRow: {
     flexDirection: 'row',

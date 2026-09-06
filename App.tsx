@@ -8,6 +8,7 @@ import {
   Platform,
   ActivityIndicator,
 } from 'react-native';
+import * as Linking from 'expo-linking';
 import { StatusBar } from 'expo-status-bar';
 import { Theme } from './src/styles/theme';
 import DashboardScreen from './src/screens/DashboardScreen';
@@ -16,16 +17,24 @@ import HistoryScreen from './src/screens/HistoryScreen';
 import AuthScreen from './src/screens/AuthScreen';
 import ProfileScreen from './src/screens/ProfileScreen';
 import CommunityScreen from './src/screens/CommunityScreen';
+import SetNewPasswordScreen from './src/screens/SetNewPasswordScreen';
 import { LayoutGrid, Navigation, History, Compass, User, Users } from 'lucide-react-native';
-import { getCurrentUser, setCurrentUser, UserProfile } from './src/utils/storage';
+import { getCurrentUser, setCurrentUser, registerUser, UserProfile } from './src/utils/storage';
 import { reconcileTripsOnLaunch } from './src/services/locationTask';
 import { startPeriodicSync } from './src/services/sync';
+import { supabase, isDemoMode } from './src/utils/supabase';
+import { parseAuthLink, loadPendingRegistration, clearPendingRegistration } from './src/services/authLinking';
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<'dashboard' | 'tracking' | 'history' | 'community' | 'profile'>('dashboard');
   const [refreshTrigger, setRefreshTrigger] = useState(0);
   const [currentUser, setSessionUser] = useState<UserProfile | null>(null);
   const [authLoading, setAuthLoading] = useState(true);
+  // Set when a password-recovery email link has just been confirmed — the
+  // app shows SetNewPasswordScreen instead of its normal content until the
+  // person picks a new password, since a live recovery session is only good
+  // for that one action.
+  const [recoveryEmail, setRecoveryEmail] = useState<string | null>(null);
 
   // Check auth session on startup
   useEffect(() => {
@@ -37,6 +46,67 @@ export default function App() {
       setSessionUser(user);
       setAuthLoading(false);
     })();
+  }, []);
+
+  // Handles the email-link auth flow (see AuthScreen and ProfileScreen):
+  // Supabase redirects back into the app with tokens in the URL after a
+  // signup confirmation or password-reset link is tapped. This listens for
+  // that both on cold start (app was fully closed while the person was in
+  // their email client) and while already running.
+  useEffect(() => {
+    if (isDemoMode || !supabase) return;
+
+    const processUrl = async (url: string | null) => {
+      if (!url) return;
+      const { accessToken, refreshToken, type } = parseAuthLink(url);
+      if (!accessToken || !refreshToken || !supabase) return;
+
+      const { data, error } = await supabase.auth.setSession({
+        access_token: accessToken,
+        refresh_token: refreshToken,
+      });
+      if (error || !data.session) {
+        console.error('[auth-link] setSession failed', error?.message);
+        return;
+      }
+
+      const sessionEmail = data.session.user.email ?? '';
+
+      if (type === 'recovery') {
+        setRecoveryEmail(sessionEmail);
+        return;
+      }
+
+      if (type === 'signup') {
+        const pending = await loadPendingRegistration();
+        const name = pending?.name ?? sessionEmail.split('@')[0] ?? 'Driver';
+        const username = pending?.username ?? (sessionEmail.split('@')[0] ?? 'driver').toLowerCase();
+        const driverType = pending?.driverType ?? 'Casual';
+
+        // Local mirror — password is unused for real-mode login (Supabase
+        // Auth already has it), so a placeholder is stored instead of ever
+        // holding a cleartext copy here.
+        await registerUser(name, sessionEmail, '__SUPABASE_AUTH__', driverType, username);
+
+        await supabase.from('profiles').upsert({
+          id: data.session.user.id,
+          email: sessionEmail,
+          username,
+          display_name: name,
+          driver_type: driverType,
+        });
+
+        const profile: UserProfile = { name, email: sessionEmail, username, driverType };
+        await setCurrentUser(profile);
+        setSessionUser(profile);
+        setActiveTab('dashboard');
+        await clearPendingRegistration();
+      }
+    };
+
+    Linking.getInitialURL().then(processUrl);
+    const subscription = Linking.addEventListener('url', ({ url }) => processUrl(url));
+    return () => subscription.remove();
   }, []);
 
   // Periodic sync of buffered trip points runs for as long as someone is
@@ -68,6 +138,21 @@ export default function App() {
         <ActivityIndicator size="large" color={Theme.colors.primary} />
         <Text style={styles.loadingText}>Connecting to Wheelrovo...</Text>
       </View>
+    );
+  }
+
+  // A password-recovery link just confirmed — collect the new password
+  // before anything else, regardless of whether a normal session exists.
+  if (recoveryEmail) {
+    return (
+      <SetNewPasswordScreen
+        email={recoveryEmail}
+        onComplete={(profile) => {
+          setSessionUser(profile);
+          setRecoveryEmail(null);
+          setActiveTab('dashboard');
+        }}
+      />
     );
   }
 

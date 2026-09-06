@@ -16,6 +16,7 @@ import { formatDistance, formatDuration, formatSpeed, formatAcceleration } from 
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import WebMapView from '../components/WebMapView';
 import ScoreBar from '../components/ScoreBar';
+import { confirmAction } from '../utils/confirm';
 
 // Conditionally import native maps to avoid compilation crashes in web browsers
 let MapView: any;
@@ -53,28 +54,26 @@ export default function HistoryScreen({ refreshTrigger, onHistoryCleared }: Hist
   };
 
   const handleClearHistory = () => {
-    Alert.alert('Clear History', 'Are you sure you want to delete all saved trip logs? This cannot be undone.', [
-      { text: 'Cancel', style: 'cancel' },
-      {
-        text: 'Clear All',
-        style: 'destructive',
-        onPress: async () => {
-          try {
-            const currentUserJson = await AsyncStorage.getItem('@wheelrovo:current_user');
-            if (currentUserJson) {
-              const currentUser = JSON.parse(currentUserJson);
-              await AsyncStorage.removeItem(`@wheelrovo:trips:${currentUser.email}`);
-            } else {
-              await AsyncStorage.removeItem('@wheelrovo:trips');
-            }
-            setTrips([]);
-            if (onHistoryCleared) onHistoryCleared();
-          } catch (e) {
-            console.error('Error clearing trips', e);
+    confirmAction(
+      'Clear History',
+      'Are you sure you want to delete all saved trip logs? This cannot be undone.',
+      'Clear All',
+      async () => {
+        try {
+          const currentUserJson = await AsyncStorage.getItem('@wheelrovo:current_user');
+          if (currentUserJson) {
+            const currentUser = JSON.parse(currentUserJson);
+            await AsyncStorage.removeItem(`@wheelrovo:trips:${currentUser.email}`);
+          } else {
+            await AsyncStorage.removeItem('@wheelrovo:trips');
           }
-        },
-      },
-    ]);
+          setTrips([]);
+          if (onHistoryCleared) onHistoryCleared();
+        } catch (e) {
+          console.error('Error clearing trips', e);
+        }
+      }
+    );
   };
 
   const toggleGlobalMapType = () => {

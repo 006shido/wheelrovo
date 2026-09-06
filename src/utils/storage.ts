@@ -62,9 +62,10 @@ export async function registerUser(
     const usersJson = await AsyncStorage.getItem(KEYS.USERS);
     const users: UserAccount[] = usersJson ? JSON.parse(usersJson) : [];
 
-    // Check if email or username is already taken
+    // Check if email or username is already taken. Optional chaining guards
+    // against accounts saved before `username` existed on this record.
     const exists = users.some(
-      (u) => u.email === formattedEmail || u.username.toLowerCase() === formattedUsername
+      (u) => u.email === formattedEmail || u.username?.toLowerCase() === formattedUsername
     );
     if (exists) return false;
 
@@ -93,12 +94,7 @@ export async function loginUser(email: string, password: string): Promise<UserPr
 
     const user = users.find((u) => u.email === formattedEmail && u.passwordHash === password);
     if (user) {
-      const profile: UserProfile = {
-        name: user.name,
-        email: user.email,
-        username: user.username,
-        driverType: user.driverType,
-      };
+      const profile = toProfile(user);
       await setCurrentUser(profile);
       return profile;
     }
@@ -298,12 +294,7 @@ export async function updateUserName(email: string, newName: string): Promise<Us
 
     // Keep the active session in sync so the new name shows up immediately
     // without requiring a re-login.
-    const updatedProfile: UserProfile = {
-      name: users[userIndex].name,
-      email: users[userIndex].email,
-      username: users[userIndex].username,
-      driverType: users[userIndex].driverType,
-    };
+    const updatedProfile = toProfile(users[userIndex]);
     await setCurrentUser(updatedProfile);
     return updatedProfile;
   } catch (error) {
@@ -320,7 +311,27 @@ export async function updateUserName(email: string, newName: string): Promise<Us
 // version once that's wired up (see supabase-schema.sql).
 
 function toProfile(user: UserAccount): UserProfile {
-  return { name: user.name, email: user.email, username: user.username, driverType: user.driverType };
+  // Fall back to an email-derived handle for accounts saved before
+  // `username` existed, so old local data doesn't crash or show blank.
+  const username = user.username || user.email.split('@')[0];
+  return { name: user.name, email: user.email, username, driverType: user.driverType };
+}
+
+// Looks up a locally-mirrored account by email — used after a real Supabase
+// password-recovery link is confirmed, to rebuild the UserProfile needed to
+// sign the person back into the app (their session is already valid at that
+// point; this just recovers the display name/username/driver type).
+export async function findUserAccountByEmail(email: string): Promise<UserProfile | null> {
+  try {
+    const formatted = email.trim().toLowerCase();
+    const usersJson = await AsyncStorage.getItem(KEYS.USERS);
+    const users: UserAccount[] = usersJson ? JSON.parse(usersJson) : [];
+    const match = users.find((u) => u.email === formatted);
+    return match ? toProfile(match) : null;
+  } catch (error) {
+    console.error('Error finding user by email:', error);
+    return null;
+  }
 }
 
 export async function findUserByUsername(username: string): Promise<UserProfile | null> {
@@ -328,7 +339,7 @@ export async function findUserByUsername(username: string): Promise<UserProfile 
     const formatted = username.trim().toLowerCase();
     const usersJson = await AsyncStorage.getItem(KEYS.USERS);
     const users: UserAccount[] = usersJson ? JSON.parse(usersJson) : [];
-    const match = users.find((u) => u.username.toLowerCase() === formatted);
+    const match = users.find((u) => u.username?.toLowerCase() === formatted);
     return match ? toProfile(match) : null;
   } catch (error) {
     console.error('Error finding user by username:', error);
@@ -347,7 +358,7 @@ export async function searchLocalUsersByUsername(
     const users: UserAccount[] = usersJson ? JSON.parse(usersJson) : [];
     return users
       .filter(
-        (u) => u.email !== excludeEmail.trim().toLowerCase() && u.username.toLowerCase().includes(formattedQuery)
+        (u) => u.email !== excludeEmail.trim().toLowerCase() && u.username?.toLowerCase().includes(formattedQuery)
       )
       .slice(0, 20)
       .map(toProfile);
