@@ -33,6 +33,9 @@ export interface UserProfile {
   email: string;
   username: string;
   driverType: string; // e.g., Casual, Delivery, Trucker, Racer
+  xp?: number;
+  level?: number;
+  isPrivate?: boolean; // true = private (maps hidden for non-friends), false = public (maps visible to all)
 }
 
 export interface UserAccount extends UserProfile {
@@ -75,6 +78,7 @@ export async function registerUser(
       username: formattedUsername,
       passwordHash: password, // Store password simply for local validation
       driverType,
+      isPrivate: true,
     };
 
     users.push(newUser);
@@ -303,6 +307,38 @@ export async function updateUserName(email: string, newName: string): Promise<Us
   }
 }
 
+export async function updateUserPrivacy(email: string, isPrivate: boolean): Promise<UserProfile | null> {
+  try {
+    const formattedEmail = email.trim().toLowerCase();
+    const usersJson = await AsyncStorage.getItem(KEYS.USERS);
+    const users: UserAccount[] = usersJson ? JSON.parse(usersJson) : [];
+
+    const userIndex = users.findIndex((u) => u.email === formattedEmail);
+    if (userIndex !== -1) {
+      users[userIndex].isPrivate = isPrivate;
+      await AsyncStorage.setItem(KEYS.USERS, JSON.stringify(users));
+    }
+
+    const current = await getCurrentUser();
+    if (current && current.email.trim().toLowerCase() === formattedEmail) {
+      const updatedProfile: UserProfile = {
+        ...current,
+        isPrivate,
+      };
+      await setCurrentUser(updatedProfile);
+      return updatedProfile;
+    }
+
+    if (userIndex !== -1) {
+      return toProfile(users[userIndex]);
+    }
+    return null;
+  } catch (error) {
+    console.error('Error updating user privacy:', error);
+    return null;
+  }
+}
+
 // --- LOCAL USER DIRECTORY (demo-mode stand-in for the Friends feature) ---
 //
 // In demo mode there's no shared server, so "search" and "friend" only work
@@ -314,7 +350,13 @@ function toProfile(user: UserAccount): UserProfile {
   // Fall back to an email-derived handle for accounts saved before
   // `username` existed, so old local data doesn't crash or show blank.
   const username = user.username || user.email.split('@')[0];
-  return { name: user.name, email: user.email, username, driverType: user.driverType };
+  return {
+    name: user.name,
+    email: user.email,
+    username,
+    driverType: user.driverType,
+    isPrivate: user.isPrivate ?? true,
+  };
 }
 
 // Looks up a locally-mirrored account by email — used after a real Supabase
@@ -352,16 +394,31 @@ export async function searchLocalUsersByUsername(
   excludeEmail: string
 ): Promise<UserProfile[]> {
   try {
-    const formattedQuery = query.trim().toLowerCase();
+    const formattedQuery = query.trim().toLowerCase().replace(/^@/, '');
     if (!formattedQuery) return [];
     const usersJson = await AsyncStorage.getItem(KEYS.USERS);
     const users: UserAccount[] = usersJson ? JSON.parse(usersJson) : [];
-    return users
+    const matches = users
       .filter(
-        (u) => u.email !== excludeEmail.trim().toLowerCase() && u.username?.toLowerCase().includes(formattedQuery)
+        (u) =>
+          u.email !== excludeEmail.trim().toLowerCase() &&
+          (u.username?.toLowerCase().includes(formattedQuery) ||
+           u.name?.toLowerCase().includes(formattedQuery))
       )
-      .slice(0, 20)
-      .map(toProfile);
+      .slice(0, 20);
+
+    return await Promise.all(
+      matches.map(async (u) => {
+        const profile = toProfile(u);
+        const state = await loadDriverStateForEmail(u.email);
+        return {
+          ...profile,
+          xp: state.xp,
+          level: state.level,
+          isPrivate: u.isPrivate ?? true,
+        };
+      })
+    );
   } catch (error) {
     console.error('Error searching local users:', error);
     return [];

@@ -103,11 +103,36 @@ export default function AuthScreen({ onAuthSuccess }: AuthScreenProps) {
             const users = usersJson ? JSON.parse(usersJson) : [];
             const existing = users.find((u: any) => u.email === formattedEmail);
 
+            // Fetch profile from Supabase first
+            const { data: remoteProfile } = await supabase
+              .from('profiles')
+              .select('*')
+              .eq('id', data.user.id)
+              .maybeSingle();
+
+            const fallbackUsername = (formattedEmail.split('@')[0] || 'driver').toLowerCase().replace(/[^a-z0-9_]/g, '');
+            const name = remoteProfile?.display_name || (existing ? existing.name : data.user.user_metadata?.display_name || data.user.email?.split('@')[0] || 'Driver');
+            const userUsername = remoteProfile?.username || (existing ? existing.username : data.user.user_metadata?.username || fallbackUsername);
+            const driverType = remoteProfile?.driver_type || (existing ? existing.driverType : data.user.user_metadata?.driver_type || 'Casual');
+
+            if (!remoteProfile) {
+              await supabase.from('profiles').upsert(
+                {
+                  id: data.user.id,
+                  email: formattedEmail,
+                  username: userUsername,
+                  display_name: name,
+                  driver_type: driverType,
+                },
+                { onConflict: 'id' }
+              );
+            }
+
             const userProfile: UserProfile = {
-              name: existing ? existing.name : data.user.email?.split('@')[0] || 'Driver',
+              name,
               email: formattedEmail,
-              username: existing ? existing.username : (data.user.email?.split('@')[0] || 'driver').toLowerCase(),
-              driverType: existing ? existing.driverType : 'Casual',
+              username: userUsername,
+              driverType,
             };
             await setCurrentUser(userProfile);
             onAuthSuccess(userProfile);

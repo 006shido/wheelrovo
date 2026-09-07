@@ -7,13 +7,26 @@ import {
   SafeAreaView,
   ActivityIndicator,
   RefreshControl,
+  TouchableOpacity,
+  Platform,
 } from 'react-native';
-import { Users, Car } from 'lucide-react-native';
+import { Users, Car, Play } from 'lucide-react-native';
 import { Theme } from '../styles/theme';
 import { getCurrentUser, UserProfile, Trip } from '../utils/storage';
 import { getFriends, getFriendTrips } from '../utils/friends';
 import { formatDistance, formatDuration, formatSpeed } from '../utils/stats';
 import ScoreBar from '../components/ScoreBar';
+import WebMapView from '../components/WebMapView';
+
+let MapView: any;
+let Polyline: any;
+let Marker: any;
+if (Platform.OS !== 'web') {
+  const MapModule = require('react-native-maps');
+  MapView = MapModule.default;
+  Polyline = MapModule.Polyline;
+  Marker = MapModule.Marker;
+}
 
 interface FeedPost {
   trip: Trip;
@@ -35,6 +48,69 @@ export default function CommunityScreen() {
   const [refreshing, setRefreshing] = useState(false);
   const [posts, setPosts] = useState<FeedPost[]>([]);
   const [hasFriends, setHasFriends] = useState(true);
+  const [playbackTriggers, setPlaybackTriggers] = useState<Record<string, number>>({});
+
+  const triggerPlayback = (tripId: string) => {
+    setPlaybackTriggers((prev) => ({
+      ...prev,
+      [tripId]: (prev[tripId] || 0) + 1,
+    }));
+  };
+
+  const renderCardMap = (trip: Trip) => {
+    if (!trip.coordinates || trip.coordinates.length === 0) {
+      return null;
+    }
+
+    if (Platform.OS === 'web') {
+      return (
+        <View style={styles.cardMapContainer}>
+          <WebMapView
+            coordinates={trip.coordinates}
+            mapType="standard"
+            playbackTrigger={playbackTriggers[trip.id] || 0}
+          />
+          <TouchableOpacity
+            style={styles.playbackBtnOverlay}
+            onPress={() => triggerPlayback(trip.id)}
+            activeOpacity={0.8}
+          >
+            <Play color="#000000" size={12} fill="#000000" />
+            <Text style={styles.playbackBtnText}>PLAY TRIP</Text>
+          </TouchableOpacity>
+        </View>
+      );
+    }
+
+    const startCoord = trip.coordinates[0];
+    const endCoord = trip.coordinates[trip.coordinates.length - 1];
+    const region = {
+      latitude: (startCoord.latitude + endCoord.latitude) / 2,
+      longitude: (startCoord.longitude + endCoord.longitude) / 2,
+      latitudeDelta: Math.abs(startCoord.latitude - endCoord.latitude) * 1.5 || 0.0122,
+      longitudeDelta: Math.abs(startCoord.longitude - endCoord.longitude) * 1.5 || 0.0121,
+    };
+
+    return (
+      <View style={styles.cardMapContainer}>
+        <MapView
+          style={styles.nativeCardMap}
+          mapType="standard"
+          initialRegion={region}
+          scrollEnabled={false}
+          zoomEnabled={false}
+        >
+          <Polyline
+            coordinates={trip.coordinates}
+            strokeColor={Theme.colors.primary}
+            strokeWidth={4}
+          />
+          <Marker coordinate={startCoord} title="Start" pinColor="#22C55E" />
+          <Marker coordinate={endCoord} title="End" pinColor="#EF4444" />
+        </MapView>
+      </View>
+    );
+  };
 
   const loadFeed = useCallback(async () => {
     const currentUser = await getCurrentUser();
@@ -123,6 +199,9 @@ export default function CommunityScreen() {
                 </Text>
               </View>
             </View>
+
+            {/* Driven Route Map for Accepted Friends */}
+            {renderCardMap(trip)}
 
             <View style={styles.tripStatsRow}>
               <View style={styles.tripStatItem}>
@@ -264,5 +343,39 @@ const styles = StyleSheet.create({
     paddingTop: Theme.spacing.md,
     borderTopWidth: 1.5,
     borderTopColor: Theme.colors.border,
+  },
+  cardMapContainer: {
+    height: 180,
+    borderRadius: Theme.borderRadius.md,
+    overflow: 'hidden',
+    borderWidth: 1.5,
+    borderColor: Theme.colors.border,
+    position: 'relative',
+    marginBottom: Theme.spacing.md,
+    backgroundColor: '#000000',
+  },
+  playbackBtnOverlay: {
+    position: 'absolute',
+    bottom: 12,
+    right: 12,
+    backgroundColor: '#FFFFFF',
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+    borderRadius: 20,
+    boxShadow: '0 2px 8px rgba(0,0,0,0.5)',
+    elevation: 4,
+  },
+  playbackBtnText: {
+    color: '#000000',
+    fontSize: 10,
+    fontWeight: 'bold',
+    letterSpacing: 0.5,
+  },
+  nativeCardMap: {
+    width: '100%',
+    height: '100%',
   },
 });

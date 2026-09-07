@@ -9,17 +9,35 @@ import {
   Alert,
   TextInput,
   ActivityIndicator,
+  Switch,
 } from 'react-native';
-import { User, Key, Edit3, ArrowLeft, Shield, RotateCcw, LogOut, Check, X, Settings, Users, ChevronRight } from 'lucide-react-native';
+import {
+  User,
+  Key,
+  Edit3,
+  ArrowLeft,
+  Shield,
+  RotateCcw,
+  LogOut,
+  Check,
+  X,
+  Settings,
+  Users,
+  ChevronRight,
+  Lock,
+  Globe,
+} from 'lucide-react-native';
 import { Theme } from '../styles/theme';
 import { isDemoMode, supabase } from '../utils/supabase';
 import {
   getCurrentUser,
   updateUserName,
   updateUserPassword,
+  updateUserPrivacy,
   clearAllData,
   UserProfile,
 } from '../utils/storage';
+import { pushUserPrivacy } from '../utils/friends';
 import FriendsScreen from './FriendsScreen';
 import { getAuthRedirectUrl } from '../services/authLinking';
 import { confirmAction } from '../utils/confirm';
@@ -34,6 +52,8 @@ export default function ProfileScreen({ onLogout, onDataReset, onProfileUpdated 
   const [profile, setProfile] = useState<UserProfile | null>(null);
   const [loading, setLoading] = useState(true);
   const [view, setView] = useState<'main' | 'settings' | 'friends'>('main');
+  const [isPrivate, setIsPrivate] = useState<boolean>(true);
+  const [privacyLoading, setPrivacyLoading] = useState<boolean>(false);
 
   // Change name flow
   const [isEditingName, setIsEditingName] = useState(false);
@@ -52,9 +72,26 @@ export default function ProfileScreen({ onLogout, onDataReset, onProfileUpdated 
     (async () => {
       const user = await getCurrentUser();
       setProfile(user);
+      setIsPrivate(user?.isPrivate !== false);
       setLoading(false);
     })();
   }, []);
+
+  const handleTogglePrivacy = async (privateMode: boolean) => {
+    if (!profile) return;
+    setIsPrivate(privateMode);
+    setPrivacyLoading(true);
+    try {
+      const updated = await updateUserPrivacy(profile.email, privateMode);
+      await pushUserPrivacy(profile.email, privateMode);
+      if (updated) {
+        setProfile(updated);
+        onProfileUpdated(updated);
+      }
+    } finally {
+      setPrivacyLoading(false);
+    }
+  };
 
   // --- NAME UPDATE ---
 
@@ -214,6 +251,79 @@ export default function ProfileScreen({ onLogout, onDataReset, onProfileUpdated 
         </View>
 
         <ScrollView contentContainerStyle={styles.container}>
+          {/* Privacy & Profile Visibility Switch Card */}
+          <View style={styles.settingsCard}>
+            <View style={styles.settingsHeader}>
+              <View style={styles.settingsHeaderLeft}>
+                {isPrivate ? (
+                  <Lock color={Theme.colors.primary} size={18} />
+                ) : (
+                  <Globe color={Theme.colors.primary} size={18} />
+                )}
+                <Text style={styles.settingsTitle}>PROFILE VISIBILITY</Text>
+              </View>
+              <View style={[styles.privacyPill, isPrivate ? styles.privacyPillPrivate : styles.privacyPillPublic]}>
+                <Text style={[styles.privacyPillText, isPrivate ? styles.privacyTextPrivate : styles.privacyTextPublic]}>
+                  {isPrivate ? 'PRIVATE' : 'PUBLIC'}
+                </Text>
+              </View>
+            </View>
+
+            <View style={styles.privacyContent}>
+              {/* Segmented Switch Buttons */}
+              <View style={styles.segmentedContainer}>
+                <TouchableOpacity
+                  style={[styles.segmentBtn, isPrivate && styles.segmentBtnActive]}
+                  onPress={() => handleTogglePrivacy(true)}
+                  disabled={privacyLoading}
+                  activeOpacity={0.8}
+                >
+                  <Lock color={isPrivate ? '#000000' : Theme.colors.textMuted} size={13} />
+                  <Text style={[styles.segmentBtnText, isPrivate && styles.segmentBtnTextActive]}>
+                    PRIVATE
+                  </Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  style={[styles.segmentBtn, !isPrivate && styles.segmentBtnActive]}
+                  onPress={() => handleTogglePrivacy(false)}
+                  disabled={privacyLoading}
+                  activeOpacity={0.8}
+                >
+                  <Globe color={!isPrivate ? '#000000' : Theme.colors.textMuted} size={13} />
+                  <Text style={[styles.segmentBtnText, !isPrivate && styles.segmentBtnTextActive]}>
+                    PUBLIC
+                  </Text>
+                </TouchableOpacity>
+              </View>
+
+              {/* Toggle Switch Row */}
+              <View style={styles.switchRow}>
+                <View style={{ flex: 1, paddingRight: Theme.spacing.md }}>
+                  <Text style={styles.switchLabel}>
+                    {isPrivate ? 'Private Profile Enabled' : 'Public Profile Enabled'}
+                  </Text>
+                  <Text style={styles.switchDesc}>
+                    {isPrivate
+                      ? 'Drivers searching for you can see your badges, level, XP, and safety scores, but your driven route map is locked and only visible to accepted friends.'
+                      : 'Your complete driving route maps, GPS playback animation, start/end markers, and telemetry are publicly available to everyone in community and search.'}
+                  </Text>
+                </View>
+                {privacyLoading ? (
+                  <ActivityIndicator size="small" color={Theme.colors.primary} />
+                ) : (
+                  <Switch
+                    value={!isPrivate}
+                    onValueChange={(val) => handleTogglePrivacy(!val)}
+                    trackColor={{ false: 'rgba(255,255,255,0.15)', true: Theme.colors.primary }}
+                    thumbColor={!isPrivate ? '#000000' : '#888888'}
+                    ios_backgroundColor="rgba(255,255,255,0.15)"
+                  />
+                )}
+              </View>
+            </View>
+          </View>
+
           {/* Change Password Panel */}
           <View style={styles.settingsCard}>
             <TouchableOpacity
@@ -408,9 +518,16 @@ export default function ProfileScreen({ onLogout, onDataReset, onProfileUpdated 
                     <Edit3 color={Theme.colors.textMuted} size={14} />
                   </TouchableOpacity>
                   {profile && (
-                    <View style={styles.roleBadge}>
-                      <Text style={styles.roleBadgeText}>{profile.driverType.toUpperCase()}</Text>
-                    </View>
+                    <>
+                      <View style={styles.roleBadge}>
+                        <Text style={styles.roleBadgeText}>{profile.driverType.toUpperCase()}</Text>
+                      </View>
+                      <View style={[styles.roleBadge, profile.isPrivate === false ? styles.publicBadge : styles.privateBadge]}>
+                        <Text style={[styles.roleBadgeText, profile.isPrivate === false ? styles.publicBadgeText : styles.privateBadgeText]}>
+                          {profile.isPrivate === false ? 'PUBLIC' : 'PRIVATE'}
+                        </Text>
+                      </View>
+                    </>
                   )}
                 </View>
               )}
@@ -718,5 +835,97 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: 'bold',
     letterSpacing: 1,
+  },
+  publicBadge: {
+    borderColor: '#22C55E',
+    backgroundColor: 'rgba(34, 197, 94, 0.1)',
+  },
+  publicBadgeText: {
+    color: '#22C55E',
+  },
+  privateBadge: {
+    borderColor: 'rgba(255,255,255,0.2)',
+    backgroundColor: 'rgba(255,255,255,0.05)',
+  },
+  privateBadgeText: {
+    color: Theme.colors.textMuted,
+  },
+  privacyPill: {
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: 12,
+    borderWidth: 1,
+  },
+  privacyPillPrivate: {
+    borderColor: 'rgba(255,255,255,0.2)',
+    backgroundColor: 'rgba(255,255,255,0.06)',
+  },
+  privacyPillPublic: {
+    borderColor: '#22C55E',
+    backgroundColor: 'rgba(34, 197, 94, 0.12)',
+  },
+  privacyPillText: {
+    fontSize: 8,
+    fontWeight: 'bold',
+    letterSpacing: 0.5,
+  },
+  privacyTextPrivate: {
+    color: Theme.colors.textMuted,
+  },
+  privacyTextPublic: {
+    color: '#22C55E',
+  },
+  privacyContent: {
+    marginTop: Theme.spacing.md,
+    borderTopWidth: 1.5,
+    borderTopColor: Theme.colors.border,
+    paddingTop: Theme.spacing.md,
+  },
+  segmentedContainer: {
+    flexDirection: 'row',
+    backgroundColor: 'rgba(255,255,255,0.04)',
+    borderRadius: Theme.borderRadius.sm,
+    padding: 3,
+    marginBottom: Theme.spacing.md,
+    borderWidth: 1,
+    borderColor: Theme.colors.border,
+  },
+  segmentBtn: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 8,
+    borderRadius: Theme.borderRadius.sm - 2,
+    gap: 6,
+  },
+  segmentBtnActive: {
+    backgroundColor: Theme.colors.primary,
+  },
+  segmentBtnText: {
+    color: Theme.colors.textMuted,
+    fontSize: 10,
+    fontWeight: 'bold',
+    letterSpacing: 0.5,
+  },
+  segmentBtnTextActive: {
+    color: '#000000',
+  },
+  switchRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: Theme.spacing.xs,
+  },
+  switchLabel: {
+    color: Theme.colors.textPrimary,
+    fontSize: 12,
+    fontWeight: 'bold',
+    marginBottom: 4,
+  },
+  switchDesc: {
+    color: Theme.colors.textMuted,
+    fontSize: 10,
+    lineHeight: 15,
   },
 });

@@ -24,6 +24,7 @@ import { reconcileTripsOnLaunch } from './src/services/locationTask';
 import { startPeriodicSync } from './src/services/sync';
 import { supabase, isDemoMode } from './src/utils/supabase';
 import { parseAuthLink, loadPendingRegistration, clearPendingRegistration } from './src/services/authLinking';
+import { ensureRemoteProfile, syncLocalTripsToRemote } from './src/utils/friends';
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<'dashboard' | 'tracking' | 'history' | 'community' | 'profile'>('dashboard');
@@ -45,6 +46,11 @@ export default function App() {
       const user = await getCurrentUser();
       setSessionUser(user);
       setAuthLoading(false);
+
+      if (user && !isDemoMode && supabase) {
+        await ensureRemoteProfile(user.email);
+        await syncLocalTripsToRemote(user.email);
+      }
     })();
   }, []);
 
