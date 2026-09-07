@@ -48,6 +48,10 @@ export default function WebMapView({ coordinates, mapType, playbackTrigger }: We
           display: none !important;
         }
         
+        .dark-tiles {
+          filter: brightness(0.6) invert(1) contrast(3) hue-rotate(200deg) saturate(0.3) brightness(0.7);
+        }
+        
         /* Pulse Animation for Playback Car Marker */
         @keyframes pulse {
           0% { transform: scale(0.8); opacity: 0.5; }
@@ -68,9 +72,10 @@ export default function WebMapView({ coordinates, mapType, playbackTrigger }: We
           markerZoomAnimation: true 
         }).setView([37.774929, -122.419416], 15);
 
-        // Standard Dark Layer
-        var streetLayer = L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
-          maxZoom: 20
+        // Standard Dark Layer (Watermark-free)
+        var streetLayer = L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+          maxZoom: 19,
+          className: 'dark-tiles'
         }).addTo(map);
 
         // Satellite Layer (Esri World Imagery)

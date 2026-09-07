@@ -9,7 +9,6 @@ import {
   Alert,
   TextInput,
   ActivityIndicator,
-  Switch,
 } from 'react-native';
 import {
   User,
@@ -83,7 +82,13 @@ export default function ProfileScreen({ onLogout, onDataReset, onProfileUpdated 
     setPrivacyLoading(true);
     try {
       const updated = await updateUserPrivacy(profile.email, privateMode);
-      await pushUserPrivacy(profile.email, privateMode);
+      const pushRes = await pushUserPrivacy(profile.email, privateMode);
+      if (!pushRes.success && pushRes.error?.includes('is_private')) {
+        Alert.alert(
+          'Supabase Schema Update Required',
+          'Could not sync to Supabase: The "is_private" column does not exist in your database. Please run the SQL snippet from supabase-schema.sql in your Supabase SQL Editor.'
+        );
+      }
       if (updated) {
         setProfile(updated);
         onProfileUpdated(updated);
@@ -278,10 +283,16 @@ export default function ProfileScreen({ onLogout, onDataReset, onProfileUpdated 
                   disabled={privacyLoading}
                   activeOpacity={0.8}
                 >
-                  <Lock color={isPrivate ? '#000000' : Theme.colors.textMuted} size={13} />
-                  <Text style={[styles.segmentBtnText, isPrivate && styles.segmentBtnTextActive]}>
-                    PRIVATE
-                  </Text>
+                  {privacyLoading && isPrivate ? (
+                    <ActivityIndicator size="small" color="#000000" />
+                  ) : (
+                    <>
+                      <Lock color={isPrivate ? '#000000' : Theme.colors.textMuted} size={13} />
+                      <Text style={[styles.segmentBtnText, isPrivate && styles.segmentBtnTextActive]}>
+                        PRIVATE
+                      </Text>
+                    </>
+                  )}
                 </TouchableOpacity>
 
                 <TouchableOpacity
@@ -290,36 +301,29 @@ export default function ProfileScreen({ onLogout, onDataReset, onProfileUpdated 
                   disabled={privacyLoading}
                   activeOpacity={0.8}
                 >
-                  <Globe color={!isPrivate ? '#000000' : Theme.colors.textMuted} size={13} />
-                  <Text style={[styles.segmentBtnText, !isPrivate && styles.segmentBtnTextActive]}>
-                    PUBLIC
-                  </Text>
+                  {privacyLoading && !isPrivate ? (
+                    <ActivityIndicator size="small" color="#000000" />
+                  ) : (
+                    <>
+                      <Globe color={!isPrivate ? '#000000' : Theme.colors.textMuted} size={13} />
+                      <Text style={[styles.segmentBtnText, !isPrivate && styles.segmentBtnTextActive]}>
+                        PUBLIC
+                      </Text>
+                    </>
+                  )}
                 </TouchableOpacity>
               </View>
 
-              {/* Toggle Switch Row */}
-              <View style={styles.switchRow}>
-                <View style={{ flex: 1, paddingRight: Theme.spacing.md }}>
-                  <Text style={styles.switchLabel}>
-                    {isPrivate ? 'Private Profile Enabled' : 'Public Profile Enabled'}
-                  </Text>
-                  <Text style={styles.switchDesc}>
-                    {isPrivate
-                      ? 'Drivers searching for you can see your badges, level, XP, and safety scores, but your driven route map is locked and only visible to accepted friends.'
-                      : 'Your complete driving route maps, GPS playback animation, start/end markers, and telemetry are publicly available to everyone in community and search.'}
-                  </Text>
-                </View>
-                {privacyLoading ? (
-                  <ActivityIndicator size="small" color={Theme.colors.primary} />
-                ) : (
-                  <Switch
-                    value={!isPrivate}
-                    onValueChange={(val) => handleTogglePrivacy(!val)}
-                    trackColor={{ false: 'rgba(255,255,255,0.15)', true: Theme.colors.primary }}
-                    thumbColor={!isPrivate ? '#000000' : '#888888'}
-                    ios_backgroundColor="rgba(255,255,255,0.15)"
-                  />
-                )}
+              {/* Privacy Description */}
+              <View style={styles.privacyDescBox}>
+                <Text style={styles.switchLabel}>
+                  {isPrivate ? 'Private Profile Enabled' : 'Public Profile Enabled'}
+                </Text>
+                <Text style={styles.switchDesc}>
+                  {isPrivate
+                    ? 'Drivers searching for you can see your badges, level, XP, and safety scores, but your driven route map is locked and only visible to accepted friends.'
+                    : 'Your complete driving route maps, GPS playback animation, start/end markers, and telemetry are publicly available to everyone in community and search.'}
+                </Text>
               </View>
             </View>
           </View>
@@ -911,10 +915,7 @@ const styles = StyleSheet.create({
   segmentBtnTextActive: {
     color: '#000000',
   },
-  switchRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
+  privacyDescBox: {
     paddingVertical: Theme.spacing.xs,
   },
   switchLabel: {

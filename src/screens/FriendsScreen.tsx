@@ -41,6 +41,7 @@ import {
   getDriverPreview,
   DriverPreviewData,
   FriendRequestView,
+  syncLocalTripsToRemote,
 } from '../utils/friends';
 import { formatDistance, formatDuration, formatSpeed } from '../utils/stats';
 import ScoreBar from '../components/ScoreBar';
@@ -174,6 +175,7 @@ export default function FriendsScreen() {
       setLoading(false);
       return;
     }
+    syncLocalTripsToRemote(user.email).catch(() => {});
     const [friendList, requests] = await Promise.all([getFriends(user.email), getPendingRequests(user.email)]);
     setFriends(friendList);
     setIncoming(requests.incoming);
@@ -645,6 +647,20 @@ export default function FriendsScreen() {
                         <View style={[styles.badgePill, styles.levelBadgePill]}>
                           <Text style={[styles.badgePillText, styles.levelBadgeText]}>LVL {user.level || 1}</Text>
                         </View>
+                        {user.isPrivate === false ? (
+                          <View style={[styles.badgePill, styles.publicBadgePill]}>
+                            <Globe color="#22C55E" size={9} />
+                            <Text style={[styles.badgePillText, styles.publicBadgeText]}>PUBLIC</Text>
+                          </View>
+                        ) : (
+                          <View style={[styles.badgePill, styles.privateBadgePill]}>
+                            <Lock color={Theme.colors.textMuted} size={9} />
+                            <Text style={[styles.badgePillText, styles.privateBadgeText]}>PRIVATE</Text>
+                          </View>
+                        )}
+                        {user.xp != null && user.xp > 0 && (
+                          <Text style={styles.xpSubtext}>{user.xp} XP</Text>
+                        )}
                       </View>
                     </View>
                     {isExpanded ? (
@@ -658,6 +674,38 @@ export default function FriendsScreen() {
                     <View style={styles.friendTripsContainer}>
                       {loadingTripsFor === user.email && (
                         <ActivityIndicator color={Theme.colors.primary} style={{ marginVertical: Theme.spacing.md }} />
+                      )}
+                      {trips && (
+                        <>
+                          {/* Driving Performance Summary */}
+                          <View style={styles.previewStatsOverview}>
+                            <View style={styles.previewStatBox}>
+                              <Text style={styles.previewStatLabel}>TOTAL DRIVES</Text>
+                              <Text style={styles.previewStatValue}>{trips.length}</Text>
+                            </View>
+                            <View style={styles.previewStatBox}>
+                              <Text style={styles.previewStatLabel}>TOTAL DISTANCE</Text>
+                              <Text style={styles.previewStatValue}>
+                                {Math.round(trips.reduce((acc, t) => acc + (t.distance || 0), 0) * 10) / 10} KM
+                              </Text>
+                            </View>
+                            <View style={styles.previewStatBox}>
+                              <Text style={styles.previewStatLabel}>SAFETY AVG</Text>
+                              <Text style={styles.previewStatValue}>
+                                {(() => {
+                                  const scored = trips.filter((t) => t.safetyScore != null);
+                                  return scored.length > 0
+                                    ? `${Math.round(scored.reduce((acc, t) => acc + (t.safetyScore || 0), 0) / scored.length)}%`
+                                    : '—';
+                                })()}
+                              </Text>
+                            </View>
+                          </View>
+
+                          <Text style={styles.previewSubLabel}>
+                            SHARED DRIVES (WITH DRIVEN MAPS)
+                          </Text>
+                        </>
                       )}
                       {trips && trips.length === 0 && (
                         <Text style={styles.emptyText}>No trips shared yet.</Text>

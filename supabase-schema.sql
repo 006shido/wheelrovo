@@ -7,12 +7,11 @@
 -- This script is completely safe to run multiple times (idempotent).
 
 -- =============================================================================
--- QUICK FIX FOR TERMINAL ERROR: "column profiles_1.is_private does not exist"
+-- REQUIRED FIX IN SUPABASE (Dashboard > SQL Editor):
 --
--- Copy & run this snippet in Supabase Dashboard > SQL Editor:
+-- Copy & run this snippet to enable public/private profiles and route maps:
 --   alter table profiles add column if not exists is_private boolean not null default true;
---   alter table profiles add column if not exists xp integer not null default 0;
---   alter table profiles add column if not exists level integer not null default 1;
+--   alter table trips add column if not exists coordinates jsonb default '[]'::jsonb;
 --   notify pgrst, 'reload schema';
 -- =============================================================================
 

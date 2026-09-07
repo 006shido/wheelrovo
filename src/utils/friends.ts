@@ -280,14 +280,25 @@ export async function getFriends(currentUserEmail: string): Promise<{ friendship
     for (const r of accepted) {
       const otherEmail = r.requesterEmail === email ? r.addresseeEmail : r.requesterEmail;
       const user = await findLocalUserByEmail(otherEmail);
-      if (user) results.push({ friendshipId: r.id, user });
+      if (user) {
+        const state = await loadDriverStateForEmail(user.email);
+        results.push({
+          friendshipId: r.id,
+          user: {
+            ...user,
+            xp: state.xp,
+            level: state.level,
+            isPrivate: (user as any).isPrivate !== false,
+          },
+        });
+      }
     }
     return results;
   }
 
   let res: any = await supabase
     .from('friendships')
-    .select('id, requester_email, addressee_email, requester:profiles!friendships_requester_email_fkey(email,username,display_name,driver_type,is_private), addressee:profiles!friendships_addressee_email_fkey(email,username,display_name,driver_type,is_private)')
+    .select('id, requester_email, addressee_email, requester:profiles!friendships_requester_email_fkey(email,username,display_name,driver_type,xp,level,is_private), addressee:profiles!friendships_addressee_email_fkey(email,username,display_name,driver_type,xp,level,is_private)')
     .eq('status', 'accepted')
     .or(`requester_email.eq.${email},addressee_email.eq.${email}`);
 
@@ -295,7 +306,7 @@ export async function getFriends(currentUserEmail: string): Promise<{ friendship
   if (res.error && res.error.message?.includes('is_private')) {
     res = await supabase
       .from('friendships')
-      .select('id, requester_email, addressee_email, requester:profiles!friendships_requester_email_fkey(email,username,display_name,driver_type), addressee:profiles!friendships_addressee_email_fkey(email,username,display_name,driver_type)')
+      .select('id, requester_email, addressee_email, requester:profiles!friendships_requester_email_fkey(email,username,display_name,driver_type,xp,level), addressee:profiles!friendships_addressee_email_fkey(email,username,display_name,driver_type,xp,level)')
       .eq('status', 'accepted')
       .or(`requester_email.eq.${email},addressee_email.eq.${email}`);
   }
@@ -315,6 +326,8 @@ export async function getFriends(currentUserEmail: string): Promise<{ friendship
         email: other.email,
         username: other.username,
         driverType: other.driver_type,
+        xp: other.xp ?? 0,
+        level: other.level ?? 1,
         isPrivate: other.is_private !== false,
       } as UserProfile,
     };
@@ -335,10 +348,26 @@ export async function getPendingRequests(
       if (r.status !== 'pending') continue;
       if (r.addresseeEmail === email) {
         const user = await findLocalUserByEmail(r.requesterEmail);
-        if (user) incoming.push({ id: r.id, user, status: r.status, createdAt: r.createdAt });
+        if (user) {
+          const state = await loadDriverStateForEmail(user.email);
+          incoming.push({
+            id: r.id,
+            user: { ...user, xp: state.xp, level: state.level, isPrivate: (user as any).isPrivate !== false },
+            status: r.status,
+            createdAt: r.createdAt,
+          });
+        }
       } else if (r.requesterEmail === email) {
         const user = await findLocalUserByEmail(r.addresseeEmail);
-        if (user) outgoing.push({ id: r.id, user, status: r.status, createdAt: r.createdAt });
+        if (user) {
+          const state = await loadDriverStateForEmail(user.email);
+          outgoing.push({
+            id: r.id,
+            user: { ...user, xp: state.xp, level: state.level, isPrivate: (user as any).isPrivate !== false },
+            status: r.status,
+            createdAt: r.createdAt,
+          });
+        }
       }
     }
     return { incoming, outgoing };
@@ -346,7 +375,7 @@ export async function getPendingRequests(
 
   let res: any = await supabase
     .from('friendships')
-    .select('id, status, created_at, requester_email, addressee_email, requester:profiles!friendships_requester_email_fkey(email,username,display_name,driver_type,is_private), addressee:profiles!friendships_addressee_email_fkey(email,username,display_name,driver_type,is_private)')
+    .select('id, status, created_at, requester_email, addressee_email, requester:profiles!friendships_requester_email_fkey(email,username,display_name,driver_type,xp,level,is_private), addressee:profiles!friendships_addressee_email_fkey(email,username,display_name,driver_type,xp,level,is_private)')
     .eq('status', 'pending')
     .or(`requester_email.eq.${email},addressee_email.eq.${email}`);
 
@@ -354,7 +383,7 @@ export async function getPendingRequests(
   if (res.error && res.error.message?.includes('is_private')) {
     res = await supabase
       .from('friendships')
-      .select('id, status, created_at, requester_email, addressee_email, requester:profiles!friendships_requester_email_fkey(email,username,display_name,driver_type), addressee:profiles!friendships_addressee_email_fkey(email,username,display_name,driver_type)')
+      .select('id, status, created_at, requester_email, addressee_email, requester:profiles!friendships_requester_email_fkey(email,username,display_name,driver_type,xp,level), addressee:profiles!friendships_addressee_email_fkey(email,username,display_name,driver_type,xp,level)')
       .eq('status', 'pending')
       .or(`requester_email.eq.${email},addressee_email.eq.${email}`);
   }
@@ -377,6 +406,8 @@ export async function getPendingRequests(
         email: other.email,
         username: other.username,
         driverType: other.driver_type,
+        xp: other.xp ?? 0,
+        level: other.level ?? 1,
         isPrivate: other.is_private !== false,
       },
       status: row.status,
@@ -410,7 +441,7 @@ async function findLocalUserByEmail(email: string): Promise<UserProfile | null> 
 export async function pushTripSummary(trip: Trip, userEmail: string): Promise<void> {
   if (isDemoMode || !supabase) return;
 
-  const { error } = await supabase.from('trips').upsert({
+  const payload: any = {
     id: trip.id,
     user_email: userEmail.trim().toLowerCase(),
     started_at: new Date().toISOString(),
@@ -427,9 +458,18 @@ export async function pushTripSummary(trip: Trip, userEmail: string): Promise<vo
     safety_score: trip.safetyScore ?? null,
     smoothness_score: trip.smoothnessScore ?? null,
     comfort_score: trip.comfortScore ?? null,
-  }, { onConflict: 'id' });
+  };
 
-  if (error) {
+  let { error } = await supabase.from('trips').upsert(payload, { onConflict: 'id' });
+
+  // Gracefully fallback if coordinates column is not added in Supabase yet
+  if (error && error.message?.includes('coordinates')) {
+    delete payload.coordinates;
+    const retry = await supabase.from('trips').upsert(payload, { onConflict: 'id' });
+    if (retry.error) {
+      console.error('[friends] pushTripSummary retry error', retry.error.message);
+    }
+  } else if (error) {
     console.error('[friends] pushTripSummary error', error.message);
   }
 }
@@ -444,27 +484,29 @@ export async function syncLocalTripsToRemote(userEmail: string): Promise<void> {
   const localTrips = await loadTripsForEmail(email);
 
   for (const trip of localTrips) {
-    if (trip.coordinates && trip.coordinates.length > 0) {
-      await supabase
-        .from('trips')
-        .upsert({
-          id: trip.id,
-          user_email: email,
-          started_at: new Date().toISOString(),
-          duration_sec: trip.duration,
-          distance_km: trip.distance,
-          avg_speed_kmh: trip.avgSpeed,
-          top_speed_kmh: trip.topSpeed ?? null,
-          coordinates: trip.coordinates,
-          max_acceleration_ms2: trip.maxAccelerationMs2 ?? null,
-          max_braking_ms2: trip.maxBrakingMs2 ?? null,
-          avg_acceleration_ms2: trip.avgAccelerationMs2 ?? null,
-          harsh_acceleration_events: trip.harshAccelerationEvents ?? null,
-          harsh_braking_events: trip.harshBrakingEvents ?? null,
-          safety_score: trip.safetyScore ?? null,
-          smoothness_score: trip.smoothnessScore ?? null,
-          comfort_score: trip.comfortScore ?? null,
-        }, { onConflict: 'id' });
+    const payload: any = {
+      id: trip.id,
+      user_email: email,
+      started_at: new Date().toISOString(),
+      duration_sec: trip.duration,
+      distance_km: trip.distance,
+      avg_speed_kmh: trip.avgSpeed,
+      top_speed_kmh: trip.topSpeed ?? null,
+      coordinates: trip.coordinates ?? [],
+      max_acceleration_ms2: trip.maxAccelerationMs2 ?? null,
+      max_braking_ms2: trip.maxBrakingMs2 ?? null,
+      avg_acceleration_ms2: trip.avgAccelerationMs2 ?? null,
+      harsh_acceleration_events: trip.harshAccelerationEvents ?? null,
+      harsh_braking_events: trip.harshBrakingEvents ?? null,
+      safety_score: trip.safetyScore ?? null,
+      smoothness_score: trip.smoothnessScore ?? null,
+      comfort_score: trip.comfortScore ?? null,
+    };
+
+    let { error } = await supabase.from('trips').upsert(payload, { onConflict: 'id' });
+    if (error && error.message?.includes('coordinates')) {
+      delete payload.coordinates;
+      await supabase.from('trips').upsert(payload, { onConflict: 'id' });
     }
   }
 }
@@ -600,19 +642,30 @@ export async function getFriendTrips(friendEmail: string): Promise<Trip[]> {
   }));
 }
 
-export async function pushUserPrivacy(userEmail: string, isPrivate: boolean): Promise<void> {
-  if (isDemoMode || !supabase) return;
-  const { error } = await supabase
-    .from('profiles')
-    .update({ is_private: isPrivate })
-    .eq('email', userEmail.trim().toLowerCase());
+export async function pushUserPrivacy(
+  userEmail: string,
+  isPrivate: boolean
+): Promise<{ success: boolean; error?: string }> {
+  if (isDemoMode || !supabase) return { success: true };
+  const email = userEmail.trim().toLowerCase();
+
+  const { data: { user } } = await supabase.auth.getUser();
+  const query = user
+    ? supabase.from('profiles').update({ is_private: isPrivate }).eq('id', user.id)
+    : supabase.from('profiles').update({ is_private: isPrivate }).eq('email', email);
+
+  const { error } = await query;
   if (error) {
     if (error.message?.includes('is_private')) {
-      console.warn('[friends] pushUserPrivacy: is_private column not yet in Supabase schema. Run migration in Supabase SQL Editor.');
+      console.warn(
+        '[friends] pushUserPrivacy: is_private column not yet in Supabase schema. Run migration in Supabase SQL Editor.'
+      );
     } else {
       console.error('[friends] pushUserPrivacy error:', error.message);
     }
+    return { success: false, error: error.message };
   }
+  return { success: true };
 }
 
 export interface DriverPreviewData {
@@ -681,19 +734,28 @@ export async function getDriverPreview(driverEmail: string, knownIsPrivate?: boo
     ? 'id, started_at, duration_sec, distance_km, avg_speed_kmh, top_speed_kmh, safety_score, smoothness_score, comfort_score'
     : 'id, started_at, duration_sec, distance_km, avg_speed_kmh, top_speed_kmh, coordinates, safety_score, smoothness_score, comfort_score';
 
-  const { data, error } = await supabase
+  let res: any = await supabase
     .from('trips')
     .select(selectCols)
     .eq('user_email', email)
     .order('started_at', { ascending: false })
     .limit(10);
 
-  if (error) {
-    console.error('[friends] getDriverPreview error', error.message);
+  if (res.error && res.error.message?.includes('coordinates')) {
+    res = await supabase
+      .from('trips')
+      .select('id, started_at, duration_sec, distance_km, avg_speed_kmh, top_speed_kmh, safety_score, smoothness_score, comfort_score')
+      .eq('user_email', email)
+      .order('started_at', { ascending: false })
+      .limit(10);
+  }
+
+  if (res.error) {
+    console.error('[friends] getDriverPreview error', res.error.message);
     return { trips: [], totalDistanceKm: 0, totalTrips: 0, avgSafetyScore: null, isPrivate };
   }
 
-  const trips: Trip[] = (data ?? []).map((row: any) => ({
+  const trips: Trip[] = (res.data ?? []).map((row: any) => ({
     id: row.id,
     date: new Date(row.started_at).toLocaleDateString(undefined, {
       month: 'short',

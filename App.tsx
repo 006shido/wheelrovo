@@ -119,6 +119,7 @@ export default function App() {
   // logged in, independent of which tab is open, and stops cleanly on logout.
   useEffect(() => {
     if (!currentUser) return;
+    syncLocalTripsToRemote(currentUser.email).catch(() => {});
     const stopSync = startPeriodicSync(currentUser.email);
     return stopSync;
   }, [currentUser?.email]);
