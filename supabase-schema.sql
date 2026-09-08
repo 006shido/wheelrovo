@@ -1,60 +1,3 @@
--- Wheelrovo — Friends feature schema
---
--- Run this in your Supabase project's SQL editor (Database > SQL Editor)
--- once EXPO_PUBLIC_SUPABASE_URL / EXPO_PUBLIC_SUPABASE_ANON_KEY are set in
--- your .env file and real Supabase Auth is wired up (isDemoMode = false).
---
--- This script is completely safe to run multiple times (idempotent).
-
--- =============================================================================
--- REQUIRED FIX IN SUPABASE (Dashboard > SQL Editor):
---
--- Copy & run this snippet in your Supabase SQL Editor:
--- 1. Enables public/private profiles and route map coordinates.
--- 2. Ensures profiles are ONLY created for EMAIL-CONFIRMED users.
--- 3. Deletes any unconfirmed test/pending profiles from the public leaderboard.
---
--- alter table profiles add column if not exists is_private boolean not null default true;
--- alter table trips add column if not exists coordinates jsonb default '[]'::jsonb;
---
--- create or replace function public.handle_new_user()
--- returns trigger
--- language plpgsql
--- security definer set search_path = public
--- as $$
--- begin
---   if new.email_confirmed_at is not null then
---     insert into public.profiles (id, email, username, display_name, driver_type, is_private)
---     values (
---       new.id,
---       new.email,
---       coalesce(new.raw_user_meta_data->>'username', lower(regexp_replace(split_part(new.email, '@', 1), '[^a-zA-Z0-9_]', '', 'g'))),
---       coalesce(new.raw_user_meta_data->>'display_name', split_part(new.email, '@', 1)),
---       coalesce(new.raw_user_meta_data->>'driver_type', 'Casual'),
---       coalesce((new.raw_user_meta_data->>'is_private')::boolean, true)
---     )
---     on conflict (id) do update set
---       email = excluded.email,
---       username = coalesce(public.profiles.username, excluded.username),
---       display_name = coalesce(public.profiles.display_name, excluded.display_name),
---       driver_type = coalesce(public.profiles.driver_type, excluded.driver_type);
---   end if;
---   return new;
--- end;
--- $$;
---
--- drop trigger if exists on_auth_user_created on auth.users;
--- drop trigger if exists on_auth_user_confirmed on auth.users;
--- create trigger on_auth_user_confirmed
---   after insert or update of email_confirmed_at on auth.users
---   for each row execute procedure public.handle_new_user();
---
--- delete from public.profiles
--- where id in (select id from auth.users where email_confirmed_at is null);
---
--- notify pgrst, 'reload schema';
--- =============================================================================
-
 -- =============================================================================
 -- 1. PROFILES TABLE & POLICIES
 -- =============================================================================
@@ -70,6 +13,7 @@ create table if not exists profiles (
   created_at timestamptz not null default now()
 );
 
+-- Ensure columns exist if table was already created
 alter table profiles add column if not exists xp integer not null default 0;
 alter table profiles add column if not exists level integer not null default 1;
 alter table profiles add column if not exists is_private boolean not null default true;
@@ -93,7 +37,7 @@ create policy "Users can update their own profile"
 
 -- =============================================================================
 -- AUTOMATIC PROFILE CREATION TRIGGER & BACKFILL
--- Profiles are ONLY created for accounts with verified/confirmed emails!
+-- (Only creates profiles when email is confirmed by clicking the link)
 -- =============================================================================
 create or replace function public.handle_new_user()
 returns trigger
@@ -101,7 +45,7 @@ language plpgsql
 security definer set search_path = public
 as $$
 begin
-  -- Only create a profile once the user has clicked their verification link!
+  -- Only create a profile once the user has verified/confirmed their email!
   if new.email_confirmed_at is not null then
     insert into public.profiles (id, email, username, display_name, driver_type, is_private)
     values (
@@ -130,27 +74,11 @@ create trigger on_auth_user_confirmed
   after insert or update of email_confirmed_at on auth.users
   for each row execute procedure public.handle_new_user();
 
--- Delete any existing unconfirmed test/pending profiles from the public database
+-- Delete any existing unconfirmed test/pending profiles from the public database (removes testdriver12345)
 delete from public.profiles
 where id in (
   select id from auth.users where email_confirmed_at is null
 );
-
--- Backfill: populate profiles only for existing CONFIRMED auth.users accounts
-insert into public.profiles (id, email, username, display_name, driver_type)
-select
-  u.id,
-  u.email,
-  case 
-    when exists (select 1 from public.profiles p where p.username = lower(regexp_replace(split_part(u.email, '@', 1), '[^a-zA-Z0-9_]', '', 'g')) and p.id <> u.id)
-    then lower(regexp_replace(split_part(u.email, '@', 1), '[^a-zA-Z0-9_]', '', 'g')) || '_' || substr(u.id::text, 1, 4)
-    else lower(regexp_replace(split_part(u.email, '@', 1), '[^a-zA-Z0-9_]', '', 'g'))
-  end,
-  split_part(u.email, '@', 1),
-  'Casual'
-from auth.users u
-where u.email_confirmed_at is not null
-on conflict (id) do nothing;
 
 -- =============================================================================
 -- 2. FRIENDSHIPS TABLE & POLICIES
@@ -199,7 +127,7 @@ create policy "Involved users can delete a friendship"
 -- 3. TRIPS TABLE & POLICIES
 -- =============================================================================
 create table if not exists trips (
-  id text primary key, -- matches the client-generated trip id used locally
+  id text primary key,
   user_email text not null references profiles(email) on delete cascade,
   started_at timestamptz not null,
   duration_sec integer not null,
@@ -219,6 +147,7 @@ create table if not exists trips (
   created_at timestamptz not null default now()
 );
 
+-- Ensure coordinates exists if table was already created
 alter table trips add column if not exists coordinates jsonb default '[]'::jsonb;
 
 alter table trips enable row level security;
@@ -228,6 +157,7 @@ create policy "Users can view their own trips"
   on trips for select
   using (auth.jwt() ->> 'email' = user_email);
 
+-- Allow authenticated users to view trips for public driver previews & community
 drop policy if exists "Accepted friends can view shared trips" on trips;
 drop policy if exists "Authenticated users can view shared trips" on trips;
 create policy "Authenticated users can view shared trips"
@@ -253,7 +183,7 @@ create policy "Users can delete their own trips"
   using (auth.jwt() ->> 'email' = user_email);
 
 -- =============================================================================
--- 4. INDEXES
+-- 4. INDEXES & CACHE RELOAD
 -- =============================================================================
 create index if not exists idx_profiles_username on profiles (username);
 create index if not exists idx_profiles_xp on profiles (xp desc);
@@ -261,6 +191,4 @@ create index if not exists idx_friendships_requester on friendships (requester_e
 create index if not exists idx_friendships_addressee on friendships (addressee_email);
 create index if not exists idx_trips_user_started on trips (user_email, started_at desc);
 
--- Reload PostgREST schema cache to immediately expose new columns to the client API
 notify pgrst, 'reload schema';
-
