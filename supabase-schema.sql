@@ -9,10 +9,50 @@
 -- =============================================================================
 -- REQUIRED FIX IN SUPABASE (Dashboard > SQL Editor):
 --
--- Copy & run this snippet to enable public/private profiles and route maps:
---   alter table profiles add column if not exists is_private boolean not null default true;
---   alter table trips add column if not exists coordinates jsonb default '[]'::jsonb;
---   notify pgrst, 'reload schema';
+-- Copy & run this snippet in your Supabase SQL Editor:
+-- 1. Enables public/private profiles and route map coordinates.
+-- 2. Ensures profiles are ONLY created for EMAIL-CONFIRMED users.
+-- 3. Deletes any unconfirmed test/pending profiles from the public leaderboard.
+--
+-- alter table profiles add column if not exists is_private boolean not null default true;
+-- alter table trips add column if not exists coordinates jsonb default '[]'::jsonb;
+--
+-- create or replace function public.handle_new_user()
+-- returns trigger
+-- language plpgsql
+-- security definer set search_path = public
+-- as $$
+-- begin
+--   if new.email_confirmed_at is not null then
+--     insert into public.profiles (id, email, username, display_name, driver_type, is_private)
+--     values (
+--       new.id,
+--       new.email,
+--       coalesce(new.raw_user_meta_data->>'username', lower(regexp_replace(split_part(new.email, '@', 1), '[^a-zA-Z0-9_]', '', 'g'))),
+--       coalesce(new.raw_user_meta_data->>'display_name', split_part(new.email, '@', 1)),
+--       coalesce(new.raw_user_meta_data->>'driver_type', 'Casual'),
+--       coalesce((new.raw_user_meta_data->>'is_private')::boolean, true)
+--     )
+--     on conflict (id) do update set
+--       email = excluded.email,
+--       username = coalesce(public.profiles.username, excluded.username),
+--       display_name = coalesce(public.profiles.display_name, excluded.display_name),
+--       driver_type = coalesce(public.profiles.driver_type, excluded.driver_type);
+--   end if;
+--   return new;
+-- end;
+-- $$;
+--
+-- drop trigger if exists on_auth_user_created on auth.users;
+-- drop trigger if exists on_auth_user_confirmed on auth.users;
+-- create trigger on_auth_user_confirmed
+--   after insert or update of email_confirmed_at on auth.users
+--   for each row execute procedure public.handle_new_user();
+--
+-- delete from public.profiles
+-- where id in (select id from auth.users where email_confirmed_at is null);
+--
+-- notify pgrst, 'reload schema';
 -- =============================================================================
 
 -- =============================================================================
@@ -53,35 +93,50 @@ create policy "Users can update their own profile"
 
 -- =============================================================================
 -- AUTOMATIC PROFILE CREATION TRIGGER & BACKFILL
+-- Profiles are ONLY created for accounts with verified/confirmed emails!
 -- =============================================================================
--- Automatically create a profile for every new user in auth.users
 create or replace function public.handle_new_user()
 returns trigger
 language plpgsql
 security definer set search_path = public
 as $$
 begin
-  insert into public.profiles (id, email, username, display_name, driver_type, is_private)
-  values (
-    new.id,
-    new.email,
-    coalesce(new.raw_user_meta_data->>'username', lower(regexp_replace(split_part(new.email, '@', 1), '[^a-zA-Z0-9_]', '', 'g'))),
-    coalesce(new.raw_user_meta_data->>'display_name', split_part(new.email, '@', 1)),
-    coalesce(new.raw_user_meta_data->>'driver_type', 'Casual'),
-    coalesce((new.raw_user_meta_data->>'is_private')::boolean, true)
-  )
-  on conflict (id) do nothing;
+  -- Only create a profile once the user has clicked their verification link!
+  if new.email_confirmed_at is not null then
+    insert into public.profiles (id, email, username, display_name, driver_type, is_private)
+    values (
+      new.id,
+      new.email,
+      coalesce(new.raw_user_meta_data->>'username', lower(regexp_replace(split_part(new.email, '@', 1), '[^a-zA-Z0-9_]', '', 'g'))),
+      coalesce(new.raw_user_meta_data->>'display_name', split_part(new.email, '@', 1)),
+      coalesce(new.raw_user_meta_data->>'driver_type', 'Casual'),
+      coalesce((new.raw_user_meta_data->>'is_private')::boolean, true)
+    )
+    on conflict (id) do update set
+      email = excluded.email,
+      username = coalesce(public.profiles.username, excluded.username),
+      display_name = coalesce(public.profiles.display_name, excluded.display_name),
+      driver_type = coalesce(public.profiles.driver_type, excluded.driver_type);
+  end if;
   return new;
 end;
 $$;
 
 drop trigger if exists on_auth_user_created on auth.users;
+drop trigger if exists on_auth_user_confirmed on auth.users;
 
-create trigger on_auth_user_created
-  after insert on auth.users
+-- Triggers on both insert (if auto-confirmed/OAuth) and update (when email link is clicked)
+create trigger on_auth_user_confirmed
+  after insert or update of email_confirmed_at on auth.users
   for each row execute procedure public.handle_new_user();
 
--- Backfill: populate profiles for any existing auth.users accounts
+-- Delete any existing unconfirmed test/pending profiles from the public database
+delete from public.profiles
+where id in (
+  select id from auth.users where email_confirmed_at is null
+);
+
+-- Backfill: populate profiles only for existing CONFIRMED auth.users accounts
 insert into public.profiles (id, email, username, display_name, driver_type)
 select
   u.id,
@@ -94,6 +149,7 @@ select
   split_part(u.email, '@', 1),
   'Casual'
 from auth.users u
+where u.email_confirmed_at is not null
 on conflict (id) do nothing;
 
 -- =============================================================================

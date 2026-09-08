@@ -191,7 +191,14 @@ export default function AuthScreen({ onAuthSuccess }: AuthScreenProps) {
           const { error } = await supabase.auth.signUp({
             email: formattedEmail,
             password,
-            options: { emailRedirectTo: getAuthRedirectUrl() },
+            options: {
+              emailRedirectTo: getAuthRedirectUrl(),
+              data: {
+                username: username.trim().toLowerCase(),
+                display_name: name,
+                driver_type: driverType,
+              },
+            },
           });
           if (error) throw error;
 
