@@ -200,6 +200,7 @@ create policy "Users can delete their own trips"
 -- 4. INDEXES
 -- =============================================================================
 create index if not exists idx_profiles_username on profiles (username);
+create index if not exists idx_profiles_xp on profiles (xp desc);
 create index if not exists idx_friendships_requester on friendships (requester_email);
 create index if not exists idx_friendships_addressee on friendships (addressee_email);
 create index if not exists idx_trips_user_started on trips (user_email, started_at desc);

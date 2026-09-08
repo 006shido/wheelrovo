@@ -95,7 +95,15 @@ export default function AuthScreen({ onAuthSuccess }: AuthScreenProps) {
             email: formattedEmail,
             password,
           });
-          if (error) throw error;
+          if (error) {
+            const localProfile = await loginUser(formattedEmail, password);
+            if (localProfile) {
+              onAuthSuccess(localProfile);
+              setLoading(false);
+              return;
+            }
+            throw error;
+          }
 
           if (data && data.user) {
             // Load local profile attributes
