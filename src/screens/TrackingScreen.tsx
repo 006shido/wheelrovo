@@ -9,7 +9,7 @@ import {
   Alert,
   Platform,
 } from 'react-native';
-import { Play, Square, Navigation, Award, RotateCcw, MapPin, Globe, Volume2, VolumeX } from 'lucide-react-native';
+import { Play, Pause, Square, Navigation, Award, RotateCcw, MapPin, Globe, Volume2, VolumeX } from 'lucide-react-native';
 import * as Location from 'expo-location';
 import { Theme } from '../styles/theme';
 import { Coordinate, getDistance, calculateRouteDistance, formatDistance, formatDuration, formatSpeed, calculateTripPerformance, formatAcceleration, TripPerformance } from '../utils/stats';
@@ -82,6 +82,7 @@ export default function TrackingScreen({ onTripCompleted, userId }: TrackingScre
   const activeTripIdRef = useRef<string | null>(null);
   // Tracking state
   const [isTracking, setIsTracking] = useState(false);
+  const [isPaused, setIsPaused] = useState(false);
   const [useSimulator, setUseSimulator] = useState(Platform.OS === 'web');
   const [selectedCityId, setSelectedCityId] = useState<string>(INDIAN_SIMULATION_ROUTES[0].id);
   const currentCity = INDIAN_SIMULATION_ROUTES.find((c) => c.id === selectedCityId) || INDIAN_SIMULATION_ROUTES[0];
@@ -159,8 +160,8 @@ export default function TrackingScreen({ onTripCompleted, userId }: TrackingScre
         const { status } = await Location.getForegroundPermissionsAsync();
         setLocationPermission(status === 'granted');
       }
-      // On web/simulator, seed cameras at the first simulated point immediately
-      const firstPt = SIMULATED_ROUTE[0];
+      // On web/simulator, seed cameras at the selected city center immediately
+      const firstPt = currentCity.center;
       refreshCamerasAt(firstPt.latitude, firstPt.longitude);
     })();
 
@@ -280,29 +281,31 @@ export default function TrackingScreen({ onTripCompleted, userId }: TrackingScre
   };
 
   // Simulator functions
-  const startSimulation = () => {
-    stopSimulation();
-    simulatorIndexRef.current = 0;
-    setCoordinates([]);
-    setDistance(0);
-    setCurrentSpeed(0);
-    setTopSpeed(0);
+  const pauseSimulation = () => {
+    if (simulatorTimerRef.current) {
+      clearInterval(simulatorTimerRef.current);
+      simulatorTimerRef.current = null;
+    }
+  };
 
+  const resumeSimulation = () => {
+    pauseSimulation();
+    const activeRoute = currentCity.route;
     const runSimStep = () => {
-      const routeLength = SIMULATED_ROUTE.length;
+      const routeLength = activeRoute.length;
       const index = simulatorIndexRef.current % routeLength;
-      const simPoint = SIMULATED_ROUTE[index];
+      const simPoint = activeRoute[index];
       const prevPoint =
         simulatorIndexRef.current > 0
-          ? SIMULATED_ROUTE[(simulatorIndexRef.current - 1) % routeLength]
+          ? activeRoute[(simulatorIndexRef.current - 1) % routeLength]
           : null;
 
-      // Realistic speed variation showing safe cruise and overspeed camera alerts
-      let simSpeed = 48 + Math.sin(index) * 16;
-      if (index === 3 || index === 4) {
-        simSpeed = 68; // Overspeed triggers!
-      } else if (index === 6 || index === 7) {
-        simSpeed = 42;
+      // Realistic speed variation along real road curve
+      let simSpeed = 52 + Math.sin(index * 0.18) * 10;
+      if ((index % 35 >= 8 && index % 35 <= 14)) {
+        simSpeed = 68; // Overspeed triggers near camera!
+      } else if (index % 25 === 0) {
+        simSpeed = 38; // Intersection turn deceleration
       }
       simSpeed = Math.max(30, Math.round(simSpeed));
 
@@ -344,9 +347,8 @@ export default function TrackingScreen({ onTripCompleted, userId }: TrackingScre
         return nextCoords;
       });
 
-      // Re-fetch cameras every 4 steps (≈ every ~4 waypoints moved)
-      // so cameras refresh as the driver reaches new areas
-      if (simulatorIndexRef.current % 4 === 0) {
+      // Re-fetch cameras every 12 steps (≈ every ~300 meters moved)
+      if (simulatorIndexRef.current % 12 === 0) {
         refreshCamerasAt(simPoint.latitude, simPoint.longitude);
       }
 
@@ -354,13 +356,42 @@ export default function TrackingScreen({ onTripCompleted, userId }: TrackingScre
     };
 
     runSimStep();
-    simulatorTimerRef.current = setInterval(runSimStep, 3000);
+    simulatorTimerRef.current = setInterval(runSimStep, 1400);
+  };
+
+  const startSimulation = () => {
+    pauseSimulation();
+    simulatorIndexRef.current = 0;
+    setCoordinates([]);
+    setDistance(0);
+    setCurrentSpeed(0);
+    setTopSpeed(0);
+    resumeSimulation();
   };
 
   const stopSimulation = () => {
-    if (simulatorTimerRef.current) {
-      clearInterval(simulatorTimerRef.current);
-      simulatorTimerRef.current = null;
+    pauseSimulation();
+    simulatorIndexRef.current = 0;
+  };
+
+  // Pause / Resume Trigger
+  const handlePauseResume = () => {
+    if (!isTracking) return;
+    if (!isPaused) {
+      // Pause
+      setIsPaused(true);
+      stopTimer();
+      if (useSimulator) {
+        pauseSimulation();
+      }
+      setCurrentSpeed(0);
+    } else {
+      // Resume
+      setIsPaused(false);
+      startTimer();
+      if (useSimulator) {
+        resumeSimulation();
+      }
     }
   };
 
@@ -368,6 +399,7 @@ export default function TrackingScreen({ onTripCompleted, userId }: TrackingScre
   const handleStartStop = async () => {
     if (!isTracking) {
       setIsTracking(true);
+      setIsPaused(false);
       setDuration(0);
       setDistance(0);
       setCurrentSpeed(0);
@@ -398,6 +430,7 @@ export default function TrackingScreen({ onTripCompleted, userId }: TrackingScre
       }
     } else {
       setIsTracking(false);
+      setIsPaused(false);
       stopTimer();
       if (useSimulator) {
         stopSimulation();
@@ -630,13 +663,14 @@ export default function TrackingScreen({ onTripCompleted, userId }: TrackingScre
           activeAlert={activeAlert}
           heading={heading}
           currentSpeed={currentSpeed}
+          centerLocation={coordinates.length === 0 ? currentCity.center : undefined}
         />
       );
     }
 
     const defaultRegion = {
-      latitude: coordinates.length > 0 ? coordinates[coordinates.length - 1].latitude : 12.9716,
-      longitude: coordinates.length > 0 ? coordinates[coordinates.length - 1].longitude : 77.5946,
+      latitude: coordinates.length > 0 ? coordinates[coordinates.length - 1].latitude : currentCity.center.latitude,
+      longitude: coordinates.length > 0 ? coordinates[coordinates.length - 1].longitude : currentCity.center.longitude,
       latitudeDelta: 0.00922,
       longitudeDelta: 0.00421,
     };
@@ -828,19 +862,53 @@ export default function TrackingScreen({ onTripCompleted, userId }: TrackingScre
         </View>
       </View>
 
-      {/* Simulator toggle bar */}
-      <View style={styles.simulatorConfig}>
-        <View style={styles.simulatorTextRow}>
-          <Text style={styles.simulatorTitle}>GPS SIMULATION</Text>
-          <Text style={styles.simulatorSubtitle}>Runs a mock driving loop for development testing</Text>
+      {/* Simulator toggle & Indian City Selection */}
+      <View style={styles.simulatorContainer}>
+        <View style={styles.simulatorConfig}>
+          <View style={styles.simulatorTextRow}>
+            <Text style={styles.simulatorTitle}>GPS SIMULATION (INDIA)</Text>
+            <Text style={styles.simulatorSubtitle}>
+              {currentCity.name} • {currentCity.landmark}
+            </Text>
+          </View>
+          <Switch
+            value={useSimulator}
+            disabled={isTracking}
+            onValueChange={(val) => setUseSimulator(val)}
+            trackColor={{ false: Theme.colors.border, true: Theme.colors.primary }}
+            thumbColor={useSimulator ? '#000000' : Theme.colors.textMuted}
+          />
         </View>
-        <Switch
-          value={useSimulator}
-          disabled={isTracking}
-          onValueChange={(val) => setUseSimulator(val)}
-          trackColor={{ false: Theme.colors.border, true: Theme.colors.primary }}
-          thumbColor={useSimulator ? '#000000' : Theme.colors.textMuted}
-        />
+
+        {useSimulator && (
+          <View style={styles.citySelectorRow}>
+            {INDIAN_SIMULATION_ROUTES.map((city) => {
+              const isSelected = city.id === currentCity.id;
+              return (
+                <TouchableOpacity
+                  key={city.id}
+                  style={[
+                    styles.cityChip,
+                    isSelected && styles.cityChipSelected,
+                    isTracking && styles.cityChipDisabled,
+                  ]}
+                  onPress={() => handleSelectCity(city.id)}
+                  disabled={isTracking}
+                  activeOpacity={0.7}
+                >
+                  <Text
+                    style={[
+                      styles.cityChipText,
+                      isSelected && styles.cityChipTextSelected,
+                    ]}
+                  >
+                    {city.name}
+                  </Text>
+                </TouchableOpacity>
+              );
+            })}
+          </View>
+        )}
       </View>
 
       {/* Summary Dialog overlay */}
@@ -935,18 +1003,24 @@ export default function TrackingScreen({ onTripCompleted, userId }: TrackingScre
             <Text
               style={[
                 styles.statValue,
+                isPaused && { color: '#f59e0b' },
                 currentSpeed > currentSpeedLimit && styles.statValueOverSpeed,
               ]}
             >
-              {formatSpeed(currentSpeed)}
+              {isPaused ? '0.0' : formatSpeed(currentSpeed)}
             </Text>
             <Text
               style={[
                 styles.statUnit,
+                isPaused && { color: '#f59e0b' },
                 currentSpeed > currentSpeedLimit && styles.statUnitOverSpeed,
               ]}
             >
-              {currentSpeed > currentSpeedLimit ? '⚠️ OVERSPEED' : 'KM/H'}
+              {isPaused
+                ? '⏸️ PAUSED'
+                : currentSpeed > currentSpeedLimit
+                ? '⚠️ OVERSPEED'
+                : 'KM/H'}
             </Text>
           </View>
 
@@ -959,20 +1033,9 @@ export default function TrackingScreen({ onTripCompleted, userId }: TrackingScre
           </View>
         </View>
 
-        {/* Start / Stop tracking button */}
+        {/* Start / Pause / Stop tracking buttons */}
         <View style={styles.actionContainer}>
-          {isTracking ? (
-            <TouchableOpacity
-              style={[styles.actionButton, styles.actionButtonActive]}
-              onPress={handleStartStop}
-              activeOpacity={0.8}
-            >
-              <View style={styles.btnContent}>
-                <Square color="#FFFFFF" size={16} fill="#FFFFFF" />
-                <Text style={styles.btnTextActive}>STOP DRIVE</Text>
-              </View>
-            </TouchableOpacity>
-          ) : (
+          {!isTracking ? (
             <TouchableOpacity
               style={[styles.actionButton, styles.actionButtonInactive]}
               onPress={handleStartStop}
@@ -983,6 +1046,42 @@ export default function TrackingScreen({ onTripCompleted, userId }: TrackingScre
                 <Text style={styles.btnTextInactive}>START DRIVE</Text>
               </View>
             </TouchableOpacity>
+          ) : (
+            <View style={styles.activeButtonRow}>
+              <TouchableOpacity
+                style={[
+                  styles.dualActionButton,
+                  isPaused ? styles.resumeButton : styles.pauseButton,
+                ]}
+                onPress={handlePauseResume}
+                activeOpacity={0.8}
+              >
+                <View style={styles.btnContent}>
+                  {isPaused ? (
+                    <>
+                      <Play color="#000000" size={15} fill="#000000" />
+                      <Text style={styles.resumeBtnText}>RESUME</Text>
+                    </>
+                  ) : (
+                    <>
+                      <Pause color="#f59e0b" size={15} fill="#f59e0b" />
+                      <Text style={styles.pauseBtnText}>PAUSE</Text>
+                    </>
+                  )}
+                </View>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={[styles.dualActionButton, styles.stopButton]}
+                onPress={handleStartStop}
+                activeOpacity={0.8}
+              >
+                <View style={styles.btnContent}>
+                  <Square color="#ef4444" size={14} fill="#ef4444" />
+                  <Text style={styles.stopBtnText}>STOP DRIVE</Text>
+                </View>
+              </TouchableOpacity>
+            </View>
           )}
         </View>
       </View>
@@ -1200,15 +1299,49 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
   },
-  simulatorConfig: {
+  simulatorContainer: {
     backgroundColor: Theme.colors.cardBackground,
+    borderBottomWidth: 1.5,
+    borderBottomColor: Theme.colors.border,
+  },
+  simulatorConfig: {
+    backgroundColor: 'transparent',
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
     paddingVertical: Theme.spacing.sm,
     paddingHorizontal: Theme.spacing.md,
-    borderBottomWidth: 1.5,
-    borderBottomColor: Theme.colors.border,
+  },
+  citySelectorRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: Theme.spacing.md,
+    paddingBottom: Theme.spacing.sm,
+    gap: 6,
+    flexWrap: 'wrap',
+  },
+  cityChip: {
+    paddingHorizontal: 9,
+    paddingVertical: 4,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.18)',
+    backgroundColor: '#111827',
+  },
+  cityChipSelected: {
+    borderColor: '#00f2fe',
+    backgroundColor: 'rgba(0, 242, 254, 0.18)',
+  },
+  cityChipDisabled: {
+    opacity: 0.5,
+  },
+  cityChipText: {
+    color: Theme.colors.textMuted,
+    fontSize: 10,
+    fontWeight: '700',
+  },
+  cityChipTextSelected: {
+    color: '#00f2fe',
   },
   simulatorTextRow: {
     flex: 1,
@@ -1286,6 +1419,54 @@ const styles = StyleSheet.create({
   actionButtonActive: {
     backgroundColor: '#000000',
     borderColor: Theme.colors.primary,
+  },
+  activeButtonRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    width: '100%',
+    gap: 10,
+  },
+  dualActionButton: {
+    flex: 1,
+    height: 46,
+    borderRadius: Theme.borderRadius.sm,
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 1.5,
+  },
+  pauseButton: {
+    backgroundColor: 'rgba(245, 158, 11, 0.12)',
+    borderColor: '#f59e0b',
+  },
+  resumeButton: {
+    backgroundColor: Theme.colors.primary,
+    borderColor: Theme.colors.primary,
+  },
+  stopButton: {
+    backgroundColor: 'rgba(239, 68, 68, 0.12)',
+    borderColor: '#ef4444',
+  },
+  pauseBtnText: {
+    color: '#f59e0b',
+    fontWeight: 'bold',
+    fontSize: 13,
+    marginLeft: Theme.spacing.sm,
+    letterSpacing: 0.5,
+  },
+  resumeBtnText: {
+    color: '#000000',
+    fontWeight: 'bold',
+    fontSize: 13,
+    marginLeft: Theme.spacing.sm,
+    letterSpacing: 0.5,
+  },
+  stopBtnText: {
+    color: '#ef4444',
+    fontWeight: 'bold',
+    fontSize: 13,
+    marginLeft: Theme.spacing.sm,
+    letterSpacing: 0.5,
   },
   btnContent: {
     flexDirection: 'row',
