@@ -9,15 +9,25 @@ import {
   Alert,
   Platform,
 } from 'react-native';
-import { Play, Square, Navigation, Award, RotateCcw, MapPin, Globe } from 'lucide-react-native';
+import { Play, Square, Navigation, Award, RotateCcw, MapPin, Globe, Volume2, VolumeX } from 'lucide-react-native';
 import * as Location from 'expo-location';
 import { Theme } from '../styles/theme';
 import { Coordinate, getDistance, calculateRouteDistance, formatDistance, formatDuration, formatSpeed, calculateTripPerformance, formatAcceleration, TripPerformance } from '../utils/stats';
-import { SIMULATED_ROUTE } from '../utils/mockData';
+import { SIMULATED_ROUTE, INDIAN_SIMULATION_ROUTES, IndianSimCity } from '../utils/mockData';
 import { saveTrip, loadDriverState, saveDriverState, loadCompletedTasks, saveCompletedTasks, DriverState, Trip } from '../utils/storage';
 import WebMapView from '../components/WebMapView';
 import ScoreBar from '../components/ScoreBar';
 import { pushTripSummary, pushDriverStats } from '../utils/friends';
+import {
+  RadarCamera,
+  RadarAlert,
+  fetchNearbyCameras,
+  findActiveRadarAlert,
+  getCurrentSpeedLimit,
+  getBearing,
+} from '../services/radarCameraService';
+import { radarAudio } from '../services/radarAudioService';
+import { RADAR_MAP_STYLE } from '../styles/radarMapStyle';
 import {
   requestBackgroundLocationPermissions,
   startBackgroundTracking,
@@ -73,10 +83,32 @@ export default function TrackingScreen({ onTripCompleted, userId }: TrackingScre
   // Tracking state
   const [isTracking, setIsTracking] = useState(false);
   const [useSimulator, setUseSimulator] = useState(Platform.OS === 'web');
+  const [selectedCityId, setSelectedCityId] = useState<string>(INDIAN_SIMULATION_ROUTES[0].id);
+  const currentCity = INDIAN_SIMULATION_ROUTES.find((c) => c.id === selectedCityId) || INDIAN_SIMULATION_ROUTES[0];
   const [locationPermission, setLocationPermission] = useState<boolean | null>(null);
+
+  const handleSelectCity = (cityId: string) => {
+    if (isTracking) return;
+    const city = INDIAN_SIMULATION_ROUTES.find((c) => c.id === cityId);
+    if (!city) return;
+    setSelectedCityId(city.id);
+    setCoordinates([]);
+    setDistance(0);
+    setCurrentSpeed(0);
+    setTopSpeed(0);
+    lastCameraFetchCell.current = '';
+    refreshCamerasAt(city.center.latitude, city.center.longitude);
+  };
   
-  // Map Type state (standard vs satellite)
-  const [mapType, setMapType] = useState<'standard' | 'satellite'>('standard');
+  // Map Type state (radar vs standard vs satellite)
+  const [mapType, setMapType] = useState<'radar' | 'standard' | 'satellite'>('radar');
+
+  // Radarbot Camera & Speed Alert state — start empty, fill from first position
+  const [cameras, setCameras] = useState<RadarCamera[]>([]);
+  const [activeAlert, setActiveAlert] = useState<RadarAlert | null>(null);
+  const [currentSpeedLimit, setCurrentSpeedLimit] = useState<number>(60);
+  const [heading, setHeading] = useState<number>(0);
+  const [isAudioMuted, setIsAudioMuted] = useState<boolean>(radarAudio.getIsMuted());
 
   // Live Telemetry
   const [coordinates, setCoordinates] = useState<Coordinate[]>([]);
@@ -105,12 +137,31 @@ export default function TrackingScreen({ onTripCompleted, userId }: TrackingScre
   const simulatorIndexRef = useRef(0);
   const simulatorTimerRef = useRef<any | null>(null);
 
+  // Camera fetch ref — tracks last fetched cell to avoid redundant calls
+  const lastCameraFetchCell = useRef<string>('');
+
+  // Fetch cameras around a position (1° grid cell prevents redundant refetches)
+  const refreshCamerasAt = async (lat: number, lon: number) => {
+    const cell = `${Math.floor(lat * 100)},${Math.floor(lon * 100)}`;
+    if (cell === lastCameraFetchCell.current) return;
+    lastCameraFetchCell.current = cell;
+    try {
+      const fetched = await fetchNearbyCameras(lat, lon);
+      if (fetched && fetched.length > 0) setCameras(fetched);
+    } catch {
+      // keep existing cameras
+    }
+  };
+
   useEffect(() => {
     (async () => {
       if (Platform.OS !== 'web') {
         const { status } = await Location.getForegroundPermissionsAsync();
         setLocationPermission(status === 'granted');
       }
+      // On web/simulator, seed cameras at the first simulated point immediately
+      const firstPt = SIMULATED_ROUTE[0];
+      refreshCamerasAt(firstPt.latitude, firstPt.longitude);
     })();
 
     return () => {
@@ -182,12 +233,38 @@ export default function TrackingScreen({ onTripCompleted, userId }: TrackingScre
           setCurrentSpeed(speedKmh);
           setTopSpeed((prev) => Math.max(prev, speedKmh)); // Update top speed
 
+          // Calculate heading
+          let bearing = heading;
+          if (location.coords.heading !== null && location.coords.heading !== undefined && location.coords.heading >= 0) {
+            bearing = location.coords.heading;
+            setHeading(bearing);
+          }
+
           setCoordinates((prev) => {
             const nextCoords = [...prev, newCoord];
             const totalDist = calculateRouteDistance(nextCoords);
             setDistance(totalDist);
+
+            const prevCoord = prev.length > 0 ? prev[prev.length - 1] : null;
+            if (prevCoord && (!location.coords.heading || location.coords.heading < 0)) {
+              bearing = getBearing(prevCoord.latitude, prevCoord.longitude, latitude, longitude);
+              setHeading(bearing);
+            }
+
+            const alert = findActiveRadarAlert(newCoord, prevCoord, cameras, speedKmh, 600);
+            setActiveAlert(alert);
+
+            const limit = getCurrentSpeedLimit(newCoord, cameras);
+            setCurrentSpeedLimit(limit);
+
+            if (alert) radarAudio.playProximityChime(alert.distanceMeters);
+            if (speedKmh > limit) radarAudio.playOverspeedAlarm();
+
             return nextCoords;
           });
+
+          // Refresh cameras as driver moves to new area (works anywhere in the world)
+          refreshCamerasAt(latitude, longitude);
         }
       );
     } catch (e) {
@@ -215,8 +292,20 @@ export default function TrackingScreen({ onTripCompleted, userId }: TrackingScre
       const routeLength = SIMULATED_ROUTE.length;
       const index = simulatorIndexRef.current % routeLength;
       const simPoint = SIMULATED_ROUTE[index];
+      const prevPoint =
+        simulatorIndexRef.current > 0
+          ? SIMULATED_ROUTE[(simulatorIndexRef.current - 1) % routeLength]
+          : null;
 
-      const simSpeed = 40 + Math.random() * 35; // speed up to 75 km/h
+      // Realistic speed variation showing safe cruise and overspeed camera alerts
+      let simSpeed = 48 + Math.sin(index) * 16;
+      if (index === 3 || index === 4) {
+        simSpeed = 68; // Overspeed triggers!
+      } else if (index === 6 || index === 7) {
+        simSpeed = 42;
+      }
+      simSpeed = Math.max(30, Math.round(simSpeed));
+
       setCurrentSpeed(simSpeed);
       setTopSpeed((prev) => Math.max(prev, simSpeed));
 
@@ -227,12 +316,39 @@ export default function TrackingScreen({ onTripCompleted, userId }: TrackingScre
         speedKmh: simSpeed,
       };
 
+      if (prevPoint) {
+        const b = getBearing(
+          prevPoint.latitude,
+          prevPoint.longitude,
+          simPoint.latitude,
+          simPoint.longitude
+        );
+        setHeading(b);
+      }
+
       setCoordinates((prev) => {
         const nextCoords = [...prev, newCoord];
         const totalDist = calculateRouteDistance(nextCoords);
         setDistance(totalDist);
+
+        const prevCoord = prev.length > 0 ? prev[prev.length - 1] : null;
+        const alert = findActiveRadarAlert(newCoord, prevCoord, cameras, simSpeed, 600);
+        setActiveAlert(alert);
+
+        const limit = getCurrentSpeedLimit(newCoord, cameras);
+        setCurrentSpeedLimit(limit);
+
+        if (alert) radarAudio.playProximityChime(alert.distanceMeters);
+        if (simSpeed > limit) radarAudio.playOverspeedAlarm();
+
         return nextCoords;
       });
+
+      // Re-fetch cameras every 4 steps (≈ every ~4 waypoints moved)
+      // so cameras refresh as the driver reaches new areas
+      if (simulatorIndexRef.current % 4 === 0) {
+        refreshCamerasAt(simPoint.latitude, simPoint.longitude);
+      }
 
       simulatorIndexRef.current += 1;
     };
@@ -490,86 +606,227 @@ export default function TrackingScreen({ onTripCompleted, userId }: TrackingScre
     }
   };
 
-  const toggleMapType = () => {
-    setMapType((prev) => (prev === 'standard' ? 'satellite' : 'standard'));
+  const cycleMapType = () => {
+    setMapType((prev) => {
+      if (prev === 'radar') return 'standard';
+      if (prev === 'standard') return 'satellite';
+      return 'radar';
+    });
+  };
+
+  const toggleAudio = () => {
+    const muted = radarAudio.toggleMute();
+    setIsAudioMuted(muted);
   };
 
   // Map Rendering logic
   const renderMap = () => {
     if (Platform.OS === 'web') {
       return (
-        <View style={{ flex: 1, position: 'relative' }}>
-          <WebMapView coordinates={coordinates} mapType={mapType} />
-          
-          {/* Floating Map Mode Selector (Web) */}
-          <TouchableOpacity style={styles.floatingMapControl} onPress={toggleMapType} activeOpacity={0.8}>
-            <Globe color={Theme.colors.primary} size={14} />
-            <Text style={styles.mapControlText}>
-              {mapType === 'satellite' ? 'MAP: SATELLITE' : 'MAP: STANDARD'}
-            </Text>
-          </TouchableOpacity>
-        </View>
+        <WebMapView
+          coordinates={coordinates}
+          mapType={mapType}
+          cameras={cameras}
+          activeAlert={activeAlert}
+          heading={heading}
+          currentSpeed={currentSpeed}
+        />
       );
     }
 
     const defaultRegion = {
-      latitude: coordinates.length > 0 ? coordinates[coordinates.length - 1].latitude : 37.7749,
-      longitude: coordinates.length > 0 ? coordinates[coordinates.length - 1].longitude : -122.4194,
+      latitude: coordinates.length > 0 ? coordinates[coordinates.length - 1].latitude : 12.9716,
+      longitude: coordinates.length > 0 ? coordinates[coordinates.length - 1].longitude : 77.5946,
       latitudeDelta: 0.00922,
       longitudeDelta: 0.00421,
     };
 
     return (
-      <View style={{ flex: 1, position: 'relative' }}>
-        <MapView
-          style={styles.map}
-          mapType={mapType}
-          theme="dark"
-          initialRegion={defaultRegion}
-          region={defaultRegion}
-          showsUserLocation={!useSimulator}
-          showsMyLocationButton={!useSimulator}
-        >
-          {coordinates.length > 0 && (
-            <>
-              <Polyline
-                coordinates={coordinates}
-                strokeColor={Theme.colors.primary}
-                strokeWidth={4}
-              />
-              <Marker
-                coordinate={coordinates[coordinates.length - 1]}
-                title="Active Driver"
-                description="Your current position"
-              >
-                <View style={styles.markerContainer}>
-                  <View style={styles.markerOutline}>
-                    <Navigation
-                      color="#000000"
-                      size={12}
-                      style={{ transform: [{ rotate: '45deg' }] }}
-                    />
-                  </View>
-                </View>
-              </Marker>
-            </>
-          )}
-        </MapView>
+      <MapView
+        style={styles.map}
+        mapType={mapType === 'satellite' ? 'satellite' : 'standard'}
+        customMapStyle={mapType === 'radar' ? RADAR_MAP_STYLE : undefined}
+        theme="dark"
+        initialRegion={defaultRegion}
+        region={defaultRegion}
+        showsUserLocation={!useSimulator}
+        showsMyLocationButton={!useSimulator}
+      >
+        {/* Speed camera markers */}
+        {cameras.map((cam) => (
+          <Marker
+            key={cam.id}
+            coordinate={{ latitude: cam.latitude, longitude: cam.longitude }}
+            title={cam.description}
+            description={`Speed limit: ${cam.speedLimit} km/h`}
+          >
+            <View
+              style={[
+                styles.nativeCameraBadge,
+                activeAlert?.camera?.id === cam.id && styles.nativeCameraBadgeAlert,
+              ]}
+            >
+              <Text style={styles.nativeCameraEmoji}>
+                {cam.type === 'seatbelt'
+                  ? '🦺'
+                  : cam.type === 'mobile_phone'
+                  ? '📱'
+                  : cam.type === 'red_light'
+                  ? '🚦'
+                  : cam.type === 'mobile'
+                  ? '🚨'
+                  : cam.type === 'section'
+                  ? '⚡'
+                  : '📷'}
+              </Text>
+              <Text style={styles.nativeCameraSpeed}>{cam.speedLimit}</Text>
+            </View>
+          </Marker>
+        ))}
 
-        {/* Floating Map Mode Selector (Native) */}
-        <TouchableOpacity style={styles.floatingMapControl} onPress={toggleMapType} activeOpacity={0.8}>
-          <Globe color={Theme.colors.primary} size={14} />
-          <Text style={styles.mapControlText}>
-            {mapType === 'satellite' ? 'MAP: SATELLITE' : 'MAP: STANDARD'}
-          </Text>
-        </TouchableOpacity>
-      </View>
+        {coordinates.length > 0 && (
+          <>
+            <Polyline
+              coordinates={coordinates}
+              strokeColor={mapType === 'radar' ? '#00f2fe' : Theme.colors.primary}
+              strokeWidth={5}
+            />
+            <Marker
+              coordinate={coordinates[coordinates.length - 1]}
+              title="Active Driver"
+              description="Your current position"
+              rotation={heading}
+              anchor={{ x: 0.5, y: 0.5 }}
+            >
+              <View style={styles.nativeVehicleMarker}>
+                <Navigation
+                  color="#00f2fe"
+                  size={20}
+                  fill="#00f2fe"
+                />
+              </View>
+            </Marker>
+          </>
+        )}
+      </MapView>
     );
   };
 
   return (
     <SafeAreaView style={styles.container}>
-      <View style={styles.mapSection}>{renderMap()}</View>
+      <View style={styles.mapSection}>
+        {renderMap()}
+
+        {/* Floating Radarbot Cockpit HUD Overlay */}
+        <View style={styles.hudOverlay} pointerEvents="box-none">
+            {/* Speed Limit Badge — bottom-left so it never overlaps zoom buttons */}
+          <View style={styles.speedLimitCorner}>
+            <View
+              style={[
+                styles.speedLimitSign,
+                currentSpeed > currentSpeedLimit && styles.speedLimitSignAlert,
+              ]}
+            >
+              <Text style={styles.speedLimitValue}>{currentSpeedLimit}</Text>
+              <Text style={styles.speedLimitLabel}>LIMIT</Text>
+            </View>
+          </View>
+
+          {/* Active Radar Proximity Alert Banner — top center */}
+          {activeAlert && (
+            <View
+              style={[
+                styles.radarAlertBanner,
+                activeAlert.isOverSpeed && styles.radarAlertBannerDanger,
+                activeAlert.camera.type === 'seatbelt' && styles.radarAlertBannerSeatbelt,
+              ]}
+            >
+              <Text style={styles.radarAlertEmoji}>
+                {activeAlert.camera.type === 'seatbelt'
+                  ? '🦺'
+                  : activeAlert.camera.type === 'mobile_phone'
+                  ? '📱'
+                  : activeAlert.camera.type === 'red_light'
+                  ? '🚦'
+                  : activeAlert.camera.type === 'mobile'
+                  ? '🚨'
+                  : activeAlert.camera.type === 'section'
+                  ? '⚡'
+                  : '📷'}
+              </Text>
+              <View style={styles.radarAlertTextCol}>
+                <View style={styles.radarAlertTitleRow}>
+                  <Text style={styles.radarAlertTitle}>
+                    {activeAlert.camera.description.toUpperCase()}
+                  </Text>
+                  <View
+                    style={[
+                      styles.radarDistancePill,
+                      activeAlert.camera.type === 'seatbelt' && { backgroundColor: '#f59e0b' },
+                    ]}
+                  >
+                    <Text style={styles.radarDistanceText}>
+                      {activeAlert.distanceMeters}M
+                    </Text>
+                  </View>
+                </View>
+                <Text
+                  style={[
+                    styles.radarAlertSub,
+                    activeAlert.camera.type === 'seatbelt' && { color: '#fcd34d' },
+                  ]}
+                >
+                  {activeAlert.camera.type === 'seatbelt'
+                    ? 'BUCKLE UP! • SEATBELT CAMERA'
+                    : activeAlert.camera.type === 'mobile_phone'
+                    ? 'HANDS-FREE ONLY! • PHONE CAMERA'
+                    : activeAlert.isOverSpeed
+                    ? `⚠️ SLOW DOWN! LIMIT ${activeAlert.camera.speedLimit} KM/H`
+                    : `LIMIT ${activeAlert.camera.speedLimit} KM/H`}
+                </Text>
+              </View>
+            </View>
+          )}
+
+          {/* Top Right Controls Group */}
+          <View style={styles.topRightControls}>
+            <TouchableOpacity
+              style={styles.hudIconButton}
+              onPress={toggleAudio}
+              activeOpacity={0.8}
+            >
+              {isAudioMuted ? (
+                <VolumeX color={Theme.colors.textMuted} size={15} />
+              ) : (
+                <Volume2 color="#00f2fe" size={15} />
+              )}
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={styles.floatingMapControl}
+              onPress={cycleMapType}
+              activeOpacity={0.8}
+            >
+              <Globe
+                color={mapType === 'radar' ? '#00f2fe' : Theme.colors.primary}
+                size={14}
+              />
+              <Text
+                style={[
+                  styles.mapControlText,
+                  mapType === 'radar' && { color: '#00f2fe' },
+                ]}
+              >
+                {mapType === 'radar'
+                  ? 'RADAR HUD'
+                  : mapType === 'satellite'
+                  ? 'SATELLITE'
+                  : 'STANDARD'}
+              </Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </View>
 
       {/* Simulator toggle bar */}
       <View style={styles.simulatorConfig}>
@@ -675,8 +932,22 @@ export default function TrackingScreen({ onTripCompleted, userId }: TrackingScre
 
           <View style={styles.statBox}>
             <Text style={styles.statLabel}>SPEED</Text>
-            <Text style={styles.statValue}>{formatSpeed(currentSpeed)}</Text>
-            <Text style={styles.statUnit}>KM/H</Text>
+            <Text
+              style={[
+                styles.statValue,
+                currentSpeed > currentSpeedLimit && styles.statValueOverSpeed,
+              ]}
+            >
+              {formatSpeed(currentSpeed)}
+            </Text>
+            <Text
+              style={[
+                styles.statUnit,
+                currentSpeed > currentSpeedLimit && styles.statUnitOverSpeed,
+              ]}
+            >
+              {currentSpeed > currentSpeedLimit ? '⚠️ OVERSPEED' : 'KM/H'}
+            </Text>
           </View>
 
           <View style={styles.divider} />
@@ -733,18 +1004,178 @@ const styles = StyleSheet.create({
     height: '100%',
   },
   floatingMapControl: {
-    position: 'absolute',
-    top: 12,
-    right: 12,
-    zIndex: 100,
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#000000',
+    backgroundColor: 'rgba(11, 15, 25, 0.85)',
     borderWidth: 1.5,
-    borderColor: Theme.colors.border,
+    borderColor: 'rgba(6, 182, 212, 0.4)',
     borderRadius: Theme.borderRadius.sm,
     paddingHorizontal: 8,
     paddingVertical: 6,
+  },
+  hudOverlay: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    zIndex: 100,
+    pointerEvents: 'box-none',
+  },
+  topRightControls: {
+    position: 'absolute',
+    top: 12,
+    right: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  speedLimitCorner: {
+    position: 'absolute',
+    bottom: 80,
+    left: 12,
+  },
+  hudIconButton: {
+    backgroundColor: 'rgba(11, 15, 25, 0.85)',
+    borderWidth: 1.5,
+    borderColor: 'rgba(6, 182, 212, 0.4)',
+    borderRadius: Theme.borderRadius.sm,
+    padding: 6,
+    marginRight: 6,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  speedLimitSign: {
+    width: 46,
+    height: 46,
+    borderRadius: 23,
+    backgroundColor: '#FFFFFF',
+    borderWidth: 3.5,
+    borderColor: '#EF4444',
+    justifyContent: 'center',
+    alignItems: 'center',
+    shadowColor: '#000000',
+    shadowOpacity: 0.5,
+    shadowRadius: 6,
+    elevation: 6,
+  },
+  speedLimitSignAlert: {
+    borderColor: '#FF0055',
+    shadowColor: '#FF0055',
+    shadowOpacity: 0.9,
+    shadowRadius: 14,
+    transform: [{ scale: 1.08 }],
+  },
+  speedLimitValue: {
+    color: '#000000',
+    fontSize: 16,
+    fontWeight: '900',
+    lineHeight: 18,
+  },
+  speedLimitLabel: {
+    color: '#EF4444',
+    fontSize: 6,
+    fontWeight: '900',
+    letterSpacing: 0.5,
+    marginTop: -1,
+  },
+  radarAlertBanner: {
+    position: 'absolute',
+    top: 12,
+    left: 12,
+    right: 130,
+    backgroundColor: 'rgba(11, 15, 25, 0.94)',
+    borderWidth: 1.5,
+    borderColor: '#06b6d4',
+    borderRadius: 10,
+    paddingHorizontal: 7,
+    paddingVertical: 5,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    shadowColor: '#06b6d4',
+    shadowOpacity: 0.4,
+    shadowRadius: 8,
+    elevation: 8,
+  },
+  radarAlertBannerDanger: {
+    backgroundColor: 'rgba(30, 10, 15, 0.96)',
+    borderColor: '#EF4444',
+    shadowColor: '#EF4444',
+  },
+  radarAlertBannerSeatbelt: {
+    backgroundColor: 'rgba(28, 20, 10, 0.96)',
+    borderColor: '#f59e0b',
+    shadowColor: '#f59e0b',
+  },
+  radarAlertEmoji: {
+    fontSize: 16,
+  },
+  radarAlertTextCol: {
+    flex: 1,
+  },
+  radarAlertTitleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  radarAlertTitle: {
+    color: '#FFFFFF',
+    fontSize: 9,
+    fontWeight: 'bold',
+    flex: 1,
+    marginRight: 3,
+  },
+  radarDistancePill: {
+    backgroundColor: '#06b6d4',
+    paddingHorizontal: 4,
+    paddingVertical: 1,
+    borderRadius: 4,
+  },
+  radarDistanceText: {
+    color: '#000000',
+    fontSize: 8,
+    fontWeight: '900',
+  },
+  radarAlertSub: {
+    color: '#38bdf8',
+    fontSize: 8,
+    fontWeight: 'bold',
+    marginTop: 1,
+  },
+  statValueOverSpeed: {
+    color: '#EF4444',
+  },
+  statUnitOverSpeed: {
+    color: '#EF4444',
+    fontWeight: 'bold',
+  },
+  nativeCameraBadge: {
+    backgroundColor: 'rgba(11, 15, 25, 0.9)',
+    borderWidth: 1.5,
+    borderColor: '#06b6d4',
+    borderRadius: 12,
+    paddingHorizontal: 5,
+    paddingVertical: 2,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 3,
+  },
+  nativeCameraBadgeAlert: {
+    borderColor: '#EF4444',
+  },
+  nativeCameraEmoji: {
+    fontSize: 12,
+  },
+  nativeCameraSpeed: {
+    color: '#FFFFFF',
+    fontSize: 9,
+    fontWeight: 'bold',
+  },
+  nativeVehicleMarker: {
+    width: 28,
+    height: 28,
+    justifyContent: 'center',
+    alignItems: 'center',
   },
   mapControlText: {
     color: Theme.colors.textPrimary,
