@@ -99,6 +99,17 @@ export default function TrackingScreen({ onTripCompleted, userId }: TrackingScre
     setTopSpeed(0);
     lastCameraFetchCell.current = '';
     refreshCamerasAt(city.center.latitude, city.center.longitude);
+    if (Platform.OS !== 'web' && nativeMapRef.current) {
+      nativeMapRef.current.animateToRegion(
+        {
+          latitude: city.center.latitude,
+          longitude: city.center.longitude,
+          latitudeDelta: 0.00922,
+          longitudeDelta: 0.00421,
+        },
+        1000
+      );
+    }
   };
   
   // Map Type state (radar vs standard vs satellite)
@@ -137,6 +148,21 @@ export default function TrackingScreen({ onTripCompleted, userId }: TrackingScre
   const locationSubscription = useRef<Location.LocationSubscription | null>(null);
   const simulatorIndexRef = useRef(0);
   const simulatorTimerRef = useRef<any | null>(null);
+  const nativeMapRef = useRef<any | null>(null);
+
+  // Smooth camera follow for native MapView
+  useEffect(() => {
+    if (Platform.OS !== 'web' && nativeMapRef.current && coordinates.length > 0) {
+      const latest = coordinates[coordinates.length - 1];
+      nativeMapRef.current.animateCamera(
+        {
+          center: { latitude: latest.latitude, longitude: latest.longitude },
+          heading: heading,
+        },
+        { duration: 1000 }
+      );
+    }
+  }, [coordinates, heading]);
 
   // Camera fetch ref — tracks last fetched cell to avoid redundant calls
   const lastCameraFetchCell = useRef<string>('');
@@ -664,6 +690,7 @@ export default function TrackingScreen({ onTripCompleted, userId }: TrackingScre
           heading={heading}
           currentSpeed={currentSpeed}
           centerLocation={coordinates.length === 0 ? currentCity.center : undefined}
+          isHistoryMode={false}
         />
       );
     }
@@ -677,12 +704,12 @@ export default function TrackingScreen({ onTripCompleted, userId }: TrackingScre
 
     return (
       <MapView
+        ref={nativeMapRef}
         style={styles.map}
         mapType={mapType === 'satellite' ? 'satellite' : 'standard'}
         customMapStyle={mapType === 'radar' ? RADAR_MAP_STYLE : undefined}
         theme="dark"
         initialRegion={defaultRegion}
-        region={defaultRegion}
         showsUserLocation={!useSimulator}
         showsMyLocationButton={!useSimulator}
       >

@@ -69,6 +69,7 @@ export default function CommunityScreen() {
             coordinates={trip.coordinates}
             mapType="standard"
             playbackTrigger={playbackTriggers[trip.id] || 0}
+            isHistoryMode={true}
           />
           <TouchableOpacity
             style={styles.playbackBtnOverlay}

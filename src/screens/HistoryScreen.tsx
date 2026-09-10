@@ -122,6 +122,7 @@ export default function HistoryScreen({ refreshTrigger, onHistoryCleared }: Hist
             coordinates={trip.coordinates} 
             mapType={mapType} 
             playbackTrigger={playbackTriggers[trip.id] || 0}
+            isHistoryMode={true}
           />
           
           {/* Action Overlay Button for playback */}

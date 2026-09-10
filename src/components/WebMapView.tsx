@@ -12,6 +12,7 @@ interface WebMapViewProps {
   currentSpeed?: number;
   playbackTrigger?: number;
   centerLocation?: { latitude: number; longitude: number };
+  isHistoryMode?: boolean;
 }
 
 // MapTiler key
@@ -182,9 +183,8 @@ const STATIC_MAP_HTML = `
     }
     .sonar-wave-2 { animation-delay: 1.2s; }
 
-    /* Directional Vehicle Marker with smooth transition */
+    /* Directional Vehicle Marker */
     .custom-vehicle-marker {
-      transition: transform 1.2s linear;
       will-change: transform;
     }
     .vehicle-pointer {
@@ -512,12 +512,16 @@ const STATIC_MAP_HTML = `
         list.forEach(function(cam) {
           present[cam.id] = true;
           var isAlert = alertingId === cam.id;
-          var icon    = createCameraIcon(cam, isAlert);
           if (cameraMarkers[cam.id]) {
-            cameraMarkers[cam.id].setIcon(icon);
-            cameraMarkers[cam.id].setLatLng([cam.latitude, cam.longitude]);
+            // Only update DOM icon if alerting status changed
+            if (cameraMarkers[cam.id]._isAlerting !== isAlert) {
+              cameraMarkers[cam.id]._isAlerting = isAlert;
+              cameraMarkers[cam.id].setIcon(createCameraIcon(cam, isAlert));
+            }
           } else {
+            var icon = createCameraIcon(cam, isAlert);
             var m = L.marker([cam.latitude, cam.longitude], { icon: icon }).addTo(map);
+            m._isAlerting = isAlert;
             m.bindPopup(
               "<b>" + (cam.description || 'Speed Camera') + "</b><br/>" +
               (cam.roadName ? cam.roadName + "<br/>" : '') +
@@ -532,43 +536,126 @@ const STATIC_MAP_HTML = `
       }
     }
 
+    var currentPos = null;
+    var committedLatLngs = [];
+    var animRafId = null;
+    var hasInitializedView = false;
+
+    function animateVehicleAndPath(fromPos, toPos, durationMs) {
+      if (animRafId) {
+        cancelAnimationFrame(animRafId);
+        animRafId = null;
+      }
+
+      var startTime = performance.now();
+      var duration = durationMs || 1200;
+      var startLat = fromPos[0];
+      var startLng = fromPos[1];
+      var endLat = toPos[0];
+      var endLng = toPos[1];
+
+      function step(now) {
+        var elapsed = now - startTime;
+        var progress = Math.min(1, elapsed / duration);
+        var t = progress;
+
+        var curLat = startLat + (endLat - startLat) * t;
+        var curLng = startLng + (endLng - startLng) * t;
+        currentPos = [curLat, curLng];
+
+        // 1. Move vehicle marker to animated position
+        if (!liveVehicleMarker) {
+          liveVehicleMarker = L.marker(currentPos, { icon: createVehicleIcon(currentRawHeading) }).addTo(map);
+        } else {
+          liveVehicleMarker.setLatLng(currentPos);
+        }
+
+        // 2. Extend polyline to the EXACT same animated position — never leads the vehicle!
+        path.setLatLngs(committedLatLngs.concat([currentPos]));
+
+        if (progress < 1) {
+          animRafId = requestAnimationFrame(step);
+        } else {
+          currentPos = [endLat, endLng];
+          committedLatLngs.push(currentPos);
+          path.setLatLngs(committedLatLngs);
+          animRafId = null;
+        }
+      }
+
+      animRafId = requestAnimationFrame(step);
+    }
+
     function updatePath(coords, isHistory) {
       activeCoords = coords || [];
+
+      // Reset when coords empty
       if (!coords || coords.length === 0) {
+        if (animRafId) {
+          cancelAnimationFrame(animRafId);
+          animRafId = null;
+        }
+        currentPos = null;
+        committedLatLngs = [];
         path.setLatLngs([]);
         if (liveVehicleMarker) { map.removeLayer(liveVehicleMarker); liveVehicleMarker = null; }
         if (startMarker) { map.removeLayer(startMarker); startMarker = null; }
         if (endMarker)   { map.removeLayer(endMarker);   endMarker   = null; }
+        hasInitializedView = false;
         return;
       }
 
       var latlngs = coords.map(function(c) { return [c.latitude, c.longitude]; });
-      path.setLatLngs(latlngs);
       var latest = latlngs[latlngs.length - 1];
 
       if (startMarker) { map.removeLayer(startMarker); startMarker = null; }
       if (endMarker)   { map.removeLayer(endMarker);   endMarker   = null; }
 
       if (isHistory) {
+        if (animRafId) {
+          cancelAnimationFrame(animRafId);
+          animRafId = null;
+        }
         if (liveVehicleMarker) { map.removeLayer(liveVehicleMarker); liveVehicleMarker = null; }
+        path.setLatLngs(latlngs);
         startMarker = L.marker(latlngs[0], { icon: startIcon }).addTo(map);
         endMarker   = L.marker(latest,     { icon: endIcon   }).addTo(map);
         map.fitBounds(path.getBounds(), { padding: [50, 50] });
       } else {
-        if (!liveVehicleMarker) {
-          liveVehicleMarker = L.marker(latest, { icon: createVehicleIcon(currentRawHeading) }).addTo(map);
-        } else {
-          liveVehicleMarker.setLatLng(latest);
+        // LIVE TRACKING MODE
+        if (coords.length === 1 || !currentPos) {
+          if (animRafId) {
+            cancelAnimationFrame(animRafId);
+            animRafId = null;
+          }
+          currentPos = latest;
+          committedLatLngs = [latest];
+          path.setLatLngs(committedLatLngs);
+          if (!liveVehicleMarker) {
+            liveVehicleMarker = L.marker(latest, { icon: createVehicleIcon(currentRawHeading) }).addTo(map);
+          } else {
+            liveVehicleMarker.setLatLng(latest);
+          }
+          updateVehiclePointerRotation();
+          if (!hasInitializedView) {
+            map.setView(latest, 16.5);
+            hasInitializedView = true;
+          }
+          applyMapRotation(currentRawHeading);
+          return;
         }
-        updateVehiclePointerRotation();
 
-        // When drive starts or continues, ensure comfortable street navigation zoom
-        if (coords.length <= 3 || map.getZoom() < 15) {
-          map.setView(latest, 16.5);
-        } else {
-          map.panTo(latest, { animate: true, duration: 1.1, easeLinearity: 0.25 });
-        }
+        // Subsequent points: smooth 60fps interpolation
+        var fromPos = currentPos;
+        var toPos = latest;
+
+        committedLatLngs = latlngs.slice(0, -1);
+        animateVehicleAndPath(fromPos, toPos, 1250);
+
+        // Smooth camera follow without resetting user zoom
+        map.panTo(toPos, { animate: true, duration: 1.25, easeLinearity: 0.25 });
         applyMapRotation(currentRawHeading);
+        updateVehiclePointerRotation();
       }
     }
 
@@ -578,6 +665,9 @@ const STATIC_MAP_HTML = `
         window.parent.postMessage(JSON.stringify({ type: 'MAP_READY' }), '*');
       }
     } catch(e) {}
+
+    var lastCenteredLat = null;
+    var lastCenteredLng = null;
 
     // Listen for parent messages
     window.addEventListener('message', function(event) {
@@ -617,7 +707,13 @@ const STATIC_MAP_HTML = `
 
         if (message.type === 'centerMap') {
           if (message.latitude && message.longitude) {
-            map.flyTo([message.latitude, message.longitude], message.zoom || 16.5, { duration: 1.2 });
+            if (lastCenteredLat === null ||
+                Math.abs(lastCenteredLat - message.latitude) > 0.0005 ||
+                Math.abs(lastCenteredLng - message.longitude) > 0.0005) {
+              lastCenteredLat = message.latitude;
+              lastCenteredLng = message.longitude;
+              map.flyTo([message.latitude, message.longitude], message.zoom || 16.5, { duration: 1.0 });
+            }
           }
         }
 
@@ -659,8 +755,10 @@ export default function WebMapView({
   currentSpeed = 0,
   playbackTrigger,
   centerLocation,
+  isHistoryMode,
 }: WebMapViewProps) {
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
+  const prevCenterRef = useRef<string>('');
 
   const pushStateToIframe = useCallback(() => {
     if (iframeRef.current && iframeRef.current.contentWindow) {
@@ -680,26 +778,36 @@ export default function WebMapView({
         }),
         '*'
       );
+
+      const effectiveHistoryMode = isHistoryMode !== undefined
+        ? isHistoryMode
+        : (playbackTrigger !== undefined);
+
       iframeRef.current.contentWindow.postMessage(
         JSON.stringify({
           type: 'updatePath',
           coordinates,
-          isHistoryMode: coordinates.length > 1 && currentSpeed === 0 && !activeAlert,
+          isHistoryMode: effectiveHistoryMode,
         }),
         '*'
       );
+
       if (centerLocation) {
-        iframeRef.current.contentWindow.postMessage(
-          JSON.stringify({
-            type: 'centerMap',
-            latitude: centerLocation.latitude,
-            longitude: centerLocation.longitude,
-          }),
-          '*'
-        );
+        const centerKey = `${centerLocation.latitude.toFixed(4)},${centerLocation.longitude.toFixed(4)}`;
+        if (centerKey !== prevCenterRef.current) {
+          prevCenterRef.current = centerKey;
+          iframeRef.current.contentWindow.postMessage(
+            JSON.stringify({
+              type: 'centerMap',
+              latitude: centerLocation.latitude,
+              longitude: centerLocation.longitude,
+            }),
+            '*'
+          );
+        }
       }
     }
-  }, [coordinates, mapType, cameras, activeAlert, heading, currentSpeed, centerLocation]);
+  }, [coordinates, mapType, cameras, activeAlert, heading, currentSpeed, centerLocation, isHistoryMode, playbackTrigger]);
 
   // Sync state changes with iframe postMessage
   useEffect(() => {
