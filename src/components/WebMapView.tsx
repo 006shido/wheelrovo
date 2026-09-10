@@ -46,13 +46,13 @@ const STATIC_MAP_HTML = `
       background: #0d1117;
     }
 
-    /* 200% oversized container that smoothly rotates around center pivot */
+    /* Dynamically sized rotating canvas centered on pivot */
     #map-rotator {
       position: absolute;
-      top: -50%;
-      left: -50%;
-      width: 200%;
-      height: 200%;
+      top: -25%;
+      left: -25%;
+      width: 150%;
+      height: 150%;
       transform-origin: 50% 50%;
       transition: transform 0.65s cubic-bezier(0.2, 0.9, 0.3, 1);
       will-change: transform;
@@ -342,29 +342,39 @@ const STATIC_MAP_HTML = `
     // Map instance — created ONCE
     var map = L.map('map', {
       zoomControl: false,
-      fadeAnimation: true,
-      markerZoomAnimation: true
+      fadeAnimation: false, // Disables 250ms tile opacity fade — eliminates flickering
+      markerZoomAnimation: true,
+      preferCanvas: true
     }).setView([12.9766, 77.5993], 16.5);
 
     // ── TILE LAYERS ──────────────────────────────────────────────────────
     var MT_KEY = '${MT_KEY}';
 
+    var tileOptions = {
+      maxZoom: 20,
+      minZoom: 1,
+      tileSize: 256,
+      keepBuffer: 3, // Lightweight buffer prevents DOM tile bloat and stops compositor lag
+      updateWhenIdle: false, // Load tiles while moving
+      updateInterval: 100 // Smoothly throttle tile requests
+    };
+
     // Radar/dark: MapTiler Streets Dark — high-contrast roads and highway labels
     var radarLayer = L.tileLayer(
       'https://api.maptiler.com/maps/streets-dark/{z}/{x}/{y}.png?key=' + MT_KEY,
-      { maxZoom: 20, minZoom: 1, tileSize: 256 }
+      tileOptions
     );
 
     // Standard: MapTiler Streets
     var streetLayer = L.tileLayer(
       'https://api.maptiler.com/maps/streets/{z}/{x}/{y}.png?key=' + MT_KEY,
-      { maxZoom: 20, minZoom: 1, tileSize: 256 }
+      tileOptions
     );
 
     // Satellite: MapTiler Satellite
     var satelliteLayer = L.tileLayer(
       'https://api.maptiler.com/tiles/satellite-v2/{z}/{x}/{y}.jpg?key=' + MT_KEY,
-      { maxZoom: 20, minZoom: 1, tileSize: 256 }
+      tileOptions
     );
 
     radarLayer.addTo(map);
@@ -372,6 +382,14 @@ const STATIC_MAP_HTML = `
 
     // Path Polyline (Snaps tightly to road geometry)
     var path = L.polyline([], { 
+      color: '#00f2fe', 
+      weight: 4.5,
+      opacity: 0.95,
+      lineJoin: 'round'
+    }).addTo(map);
+
+    // Lightweight 2-point active moving segment (prevents redrawing entire history at 60fps)
+    var activeSegment = L.polyline([], { 
       color: '#00f2fe', 
       weight: 4.5,
       opacity: 0.95,
@@ -548,11 +566,14 @@ const STATIC_MAP_HTML = `
       }
 
       var startTime = performance.now();
-      var duration = durationMs || 1200;
+      var duration = durationMs || 1400;
       var startLat = fromPos[0];
       var startLng = fromPos[1];
       var endLat = toPos[0];
       var endLng = toPos[1];
+
+      // Draw all past confirmed points once
+      path.setLatLngs(committedLatLngs);
 
       function step(now) {
         var elapsed = now - startTime;
@@ -570,8 +591,11 @@ const STATIC_MAP_HTML = `
           liveVehicleMarker.setLatLng(currentPos);
         }
 
-        // 2. Extend polyline to the EXACT same animated position — never leads the vehicle!
-        path.setLatLngs(committedLatLngs.concat([currentPos]));
+        // 2. Active segment only draws 2 points [fromPos, currentPos] (instant, 0ms lag!)
+        activeSegment.setLatLngs([fromPos, currentPos]);
+
+        // 3. Smooth camera tracking in lockstep with marker — zero desync, zero CSS jitter!
+        map.panTo(currentPos, { animate: false });
 
         if (progress < 1) {
           animRafId = requestAnimationFrame(step);
@@ -579,6 +603,7 @@ const STATIC_MAP_HTML = `
           currentPos = [endLat, endLng];
           committedLatLngs.push(currentPos);
           path.setLatLngs(committedLatLngs);
+          activeSegment.setLatLngs([]);
           animRafId = null;
         }
       }
@@ -598,6 +623,7 @@ const STATIC_MAP_HTML = `
         currentPos = null;
         committedLatLngs = [];
         path.setLatLngs([]);
+        activeSegment.setLatLngs([]);
         if (liveVehicleMarker) { map.removeLayer(liveVehicleMarker); liveVehicleMarker = null; }
         if (startMarker) { map.removeLayer(startMarker); startMarker = null; }
         if (endMarker)   { map.removeLayer(endMarker);   endMarker   = null; }
@@ -617,6 +643,7 @@ const STATIC_MAP_HTML = `
           animRafId = null;
         }
         if (liveVehicleMarker) { map.removeLayer(liveVehicleMarker); liveVehicleMarker = null; }
+        activeSegment.setLatLngs([]);
         path.setLatLngs(latlngs);
         startMarker = L.marker(latlngs[0], { icon: startIcon }).addTo(map);
         endMarker   = L.marker(latest,     { icon: endIcon   }).addTo(map);
@@ -631,33 +658,49 @@ const STATIC_MAP_HTML = `
           currentPos = latest;
           committedLatLngs = [latest];
           path.setLatLngs(committedLatLngs);
+          activeSegment.setLatLngs([]);
           if (!liveVehicleMarker) {
             liveVehicleMarker = L.marker(latest, { icon: createVehicleIcon(currentRawHeading) }).addTo(map);
           } else {
             liveVehicleMarker.setLatLng(latest);
           }
           updateVehiclePointerRotation();
-          if (!hasInitializedView) {
-            map.setView(latest, 16.5);
-            hasInitializedView = true;
-          }
+          map.setView(latest, 16.5);
+          hasInitializedView = true;
           applyMapRotation(currentRawHeading);
           return;
         }
 
-        // Subsequent points: smooth 60fps interpolation
+        // Subsequent points: continuous 60fps interpolation matching sim/GPS cadence
         var fromPos = currentPos;
         var toPos = latest;
 
         committedLatLngs = latlngs.slice(0, -1);
-        animateVehicleAndPath(fromPos, toPos, 1250);
+        animateVehicleAndPath(fromPos, toPos, 1400);
 
-        // Smooth camera follow without resetting user zoom
-        map.panTo(toPos, { animate: true, duration: 1.25, easeLinearity: 0.25 });
-        applyMapRotation(currentRawHeading);
         updateVehiclePointerRotation();
       }
     }
+
+    function updateRotatorSize() {
+      var vp = document.getElementById('map-viewport');
+      if (!vp) return;
+      var w = vp.clientWidth || window.innerWidth || 400;
+      var h = vp.clientHeight || window.innerHeight || 600;
+      var diag = Math.ceil(Math.sqrt(w * w + h * h)) + 40;
+      var rotator = document.getElementById('map-rotator');
+      if (rotator) {
+        rotator.style.width = diag + 'px';
+        rotator.style.height = diag + 'px';
+        rotator.style.left = Math.round((w - diag) / 2) + 'px';
+        rotator.style.top = Math.round((h - diag) / 2) + 'px';
+      }
+      if (map) map.invalidateSize();
+    }
+
+    updateRotatorSize();
+    setTimeout(updateRotatorSize, 150);
+    window.addEventListener('resize', updateRotatorSize);
 
     // Signal map is ready to parent window
     try {
@@ -675,26 +718,33 @@ const STATIC_MAP_HTML = `
         var message = JSON.parse(event.data);
         
         if (message.type === 'setMapType') {
+          if (message.mapType === currentMode) return; // Prevent removing and re-adding active tile layer!
           if (map.hasLayer(radarLayer))     map.removeLayer(radarLayer);
           if (map.hasLayer(streetLayer))    map.removeLayer(streetLayer);
           if (map.hasLayer(satelliteLayer)) map.removeLayer(satelliteLayer);
           currentMode = message.mapType;
+          var color = '#00f2fe';
           if (message.mapType === 'satellite') {
             satelliteLayer.addTo(map);
-            path.setStyle({ color: '#38bdf8' });
+            color = '#38bdf8';
           } else if (message.mapType === 'standard') {
             streetLayer.addTo(map);
-            path.setStyle({ color: '#2563eb' });
+            color = '#2563eb';
           } else {
             radarLayer.addTo(map);
-            path.setStyle({ color: '#00f2fe' });
+            color = '#00f2fe';
           }
+          path.setStyle({ color: color });
+          activeSegment.setStyle({ color: color });
         }
 
         if (message.type === 'updateHeading') {
-          currentRawHeading = message.heading || 0;
-          applyMapRotation(currentRawHeading);
-          updateVehiclePointerRotation();
+          var h = Math.round(message.heading || 0);
+          if (h !== currentRawHeading) {
+            currentRawHeading = h;
+            applyMapRotation(currentRawHeading);
+            updateVehiclePointerRotation();
+          }
         }
 
         if (message.type === 'updateCameras') {
@@ -746,7 +796,7 @@ const STATIC_MAP_HTML = `
 </html>
 `;
 
-export default function WebMapView({
+function WebMapViewInner({
   coordinates,
   mapType,
   cameras = [],
@@ -759,63 +809,103 @@ export default function WebMapView({
 }: WebMapViewProps) {
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
   const prevCenterRef = useRef<string>('');
+  const prevMapTypeRef = useRef<string>('');
+  const prevHeadingRef = useRef<number>(-999);
+  const prevCamerasRef = useRef<string>('');
 
-  const pushStateToIframe = useCallback(() => {
+  const sendPostMessage = useCallback((payload: object) => {
     if (iframeRef.current && iframeRef.current.contentWindow) {
-      iframeRef.current.contentWindow.postMessage(
-        JSON.stringify({ type: 'setMapType', mapType }),
-        '*'
-      );
-      iframeRef.current.contentWindow.postMessage(
-        JSON.stringify({ type: 'updateHeading', heading }),
-        '*'
-      );
-      iframeRef.current.contentWindow.postMessage(
-        JSON.stringify({
-          type: 'updateCameras',
-          cameras,
-          alertingCameraId: activeAlert?.camera?.id || null,
-        }),
-        '*'
-      );
+      iframeRef.current.contentWindow.postMessage(JSON.stringify(payload), '*');
+    }
+  }, []);
 
-      const effectiveHistoryMode = isHistoryMode !== undefined
-        ? isHistoryMode
-        : (playbackTrigger !== undefined);
+  // Sync MapType ONLY when it actually changes
+  useEffect(() => {
+    if (mapType !== prevMapTypeRef.current) {
+      prevMapTypeRef.current = mapType;
+      sendPostMessage({ type: 'setMapType', mapType });
+    }
+  }, [mapType, sendPostMessage]);
 
-      iframeRef.current.contentWindow.postMessage(
-        JSON.stringify({
-          type: 'updatePath',
-          coordinates,
-          isHistoryMode: effectiveHistoryMode,
-        }),
-        '*'
-      );
+  // Sync Heading ONLY when it changes by at least 1 degree
+  useEffect(() => {
+    const rounded = Math.round(heading);
+    if (rounded !== prevHeadingRef.current) {
+      prevHeadingRef.current = rounded;
+      sendPostMessage({ type: 'updateHeading', heading: rounded });
+    }
+  }, [heading, sendPostMessage]);
 
-      if (centerLocation) {
-        const centerKey = `${centerLocation.latitude.toFixed(4)},${centerLocation.longitude.toFixed(4)}`;
-        if (centerKey !== prevCenterRef.current) {
-          prevCenterRef.current = centerKey;
-          iframeRef.current.contentWindow.postMessage(
-            JSON.stringify({
-              type: 'centerMap',
-              latitude: centerLocation.latitude,
-              longitude: centerLocation.longitude,
-            }),
-            '*'
-          );
-        }
+  // Sync Cameras & Alerts ONLY when they change
+  useEffect(() => {
+    const alertId = activeAlert?.camera?.id || null;
+    const camKey = `${cameras.length}_${alertId}`;
+    if (camKey !== prevCamerasRef.current) {
+      prevCamerasRef.current = camKey;
+      sendPostMessage({
+        type: 'updateCameras',
+        cameras,
+        alertingCameraId: alertId,
+      });
+    }
+  }, [cameras, activeAlert, sendPostMessage]);
+
+  // Sync Center Location ONLY when centerLocation actually changes
+  useEffect(() => {
+    if (centerLocation) {
+      const centerKey = `${centerLocation.latitude.toFixed(4)},${centerLocation.longitude.toFixed(4)}`;
+      if (centerKey !== prevCenterRef.current) {
+        prevCenterRef.current = centerKey;
+        sendPostMessage({
+          type: 'centerMap',
+          latitude: centerLocation.latitude,
+          longitude: centerLocation.longitude,
+        });
       }
     }
-  }, [coordinates, mapType, cameras, activeAlert, heading, currentSpeed, centerLocation, isHistoryMode, playbackTrigger]);
+  }, [centerLocation, sendPostMessage]);
 
-  // Sync state changes with iframe postMessage
+  // Sync Path when coordinates or historyMode change
   useEffect(() => {
-    if (Platform.OS === 'web') {
-      const timeout = setTimeout(pushStateToIframe, 30);
-      return () => clearTimeout(timeout);
+    const effectiveHistoryMode = isHistoryMode !== undefined
+      ? isHistoryMode
+      : (playbackTrigger !== undefined);
+
+    sendPostMessage({
+      type: 'updatePath',
+      coordinates,
+      isHistoryMode: effectiveHistoryMode,
+    });
+  }, [coordinates, isHistoryMode, playbackTrigger, sendPostMessage]);
+
+  // Full state push on initial load / MAP_READY
+  const pushAllState = useCallback(() => {
+    sendPostMessage({ type: 'setMapType', mapType });
+    prevMapTypeRef.current = mapType;
+    const roundedHeading = Math.round(heading);
+    sendPostMessage({ type: 'updateHeading', heading: roundedHeading });
+    prevHeadingRef.current = roundedHeading;
+    sendPostMessage({
+      type: 'updateCameras',
+      cameras,
+      alertingCameraId: activeAlert?.camera?.id || null,
+    });
+    const effectiveHistoryMode = isHistoryMode !== undefined
+      ? isHistoryMode
+      : (playbackTrigger !== undefined);
+    sendPostMessage({
+      type: 'updatePath',
+      coordinates,
+      isHistoryMode: effectiveHistoryMode,
+    });
+    if (centerLocation) {
+      sendPostMessage({
+        type: 'centerMap',
+        latitude: centerLocation.latitude,
+        longitude: centerLocation.longitude,
+      });
     }
-  }, [pushStateToIframe]);
+  }, [sendPostMessage, mapType, heading, cameras, activeAlert, coordinates, isHistoryMode, playbackTrigger, centerLocation]);
 
   // Listen for MAP_READY from iframe
   useEffect(() => {
@@ -825,23 +915,20 @@ export default function WebMapView({
       try {
         const data = typeof event.data === 'string' ? JSON.parse(event.data) : event.data;
         if (data && data.type === 'MAP_READY') {
-          pushStateToIframe();
+          pushAllState();
         }
       } catch (e) {}
     };
 
     window.addEventListener('message', handleWindowMessage);
     return () => window.removeEventListener('message', handleWindowMessage);
-  }, [pushStateToIframe]);
+  }, [pushAllState]);
 
   useEffect(() => {
-    if (playbackTrigger && Platform.OS === 'web' && iframeRef.current && iframeRef.current.contentWindow) {
-      iframeRef.current.contentWindow.postMessage(
-        JSON.stringify({ type: 'startPlayback' }),
-        '*'
-      );
+    if (playbackTrigger && Platform.OS === 'web') {
+      sendPostMessage({ type: 'startPlayback' });
     }
-  }, [playbackTrigger]);
+  }, [playbackTrigger, sendPostMessage]);
 
   if (Platform.OS !== 'web') {
     return null;
@@ -852,7 +939,7 @@ export default function WebMapView({
       <iframe
         ref={iframeRef}
         srcDoc={STATIC_MAP_HTML}
-        onLoad={pushStateToIframe}
+        onLoad={pushAllState}
         style={{
           width: '100%',
           height: '100%',
@@ -865,10 +952,14 @@ export default function WebMapView({
   );
 }
 
+const WebMapView = React.memo(WebMapViewInner);
+export default WebMapView;
+
 const styles = StyleSheet.create({
   webMapContainer: {
     width: '100%',
     height: '100%',
     backgroundColor: '#0d1117',
+    overflow: 'hidden',
   },
 });

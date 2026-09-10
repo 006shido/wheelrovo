@@ -149,6 +149,7 @@ export default function TrackingScreen({ onTripCompleted, userId }: TrackingScre
   const simulatorIndexRef = useRef(0);
   const simulatorTimerRef = useRef<any | null>(null);
   const nativeMapRef = useRef<any | null>(null);
+  const lastGpsCoordRef = useRef<Coordinate | null>(null);
 
   // Smooth camera follow for native MapView
   useEffect(() => {
@@ -241,6 +242,7 @@ export default function TrackingScreen({ onTripCompleted, userId }: TrackingScre
 
     try {
       stopLocationTracking();
+      lastGpsCoordRef.current = null;
       locationSubscription.current = await Location.watchPositionAsync(
         {
           accuracy: Location.Accuracy.High,
@@ -267,28 +269,29 @@ export default function TrackingScreen({ onTripCompleted, userId }: TrackingScre
             setHeading(bearing);
           }
 
-          setCoordinates((prev) => {
-            const nextCoords = [...prev, newCoord];
-            const totalDist = calculateRouteDistance(nextCoords);
-            setDistance(totalDist);
+          const prevCoord = lastGpsCoordRef.current;
+          lastGpsCoordRef.current = newCoord;
 
-            const prevCoord = prev.length > 0 ? prev[prev.length - 1] : null;
-            if (prevCoord && (!location.coords.heading || location.coords.heading < 0)) {
+          if (prevCoord) {
+            const stepDist = getDistance(prevCoord, newCoord);
+            setDistance((prev) => Number((prev + stepDist).toFixed(2)));
+
+            if (!location.coords.heading || location.coords.heading < 0) {
               bearing = getBearing(prevCoord.latitude, prevCoord.longitude, latitude, longitude);
               setHeading(bearing);
             }
+          }
 
-            const alert = findActiveRadarAlert(newCoord, prevCoord, cameras, speedKmh, 600);
-            setActiveAlert(alert);
+          const alert = findActiveRadarAlert(newCoord, prevCoord, cameras, speedKmh, 600);
+          setActiveAlert(alert);
 
-            const limit = getCurrentSpeedLimit(newCoord, cameras);
-            setCurrentSpeedLimit(limit);
+          const limit = getCurrentSpeedLimit(newCoord, cameras);
+          setCurrentSpeedLimit(limit);
 
-            if (alert) radarAudio.playProximityChime(alert.distanceMeters);
-            if (speedKmh > limit) radarAudio.playOverspeedAlarm();
+          if (alert) radarAudio.playProximityChime(alert.distanceMeters);
+          if (speedKmh > limit) radarAudio.playOverspeedAlarm();
 
-            return nextCoords;
-          });
+          setCoordinates((prev) => [...prev, newCoord]);
 
           // Refresh cameras as driver moves to new area (works anywhere in the world)
           refreshCamerasAt(latitude, longitude);
@@ -304,6 +307,7 @@ export default function TrackingScreen({ onTripCompleted, userId }: TrackingScre
       locationSubscription.current.remove();
       locationSubscription.current = null;
     }
+    lastGpsCoordRef.current = null;
   };
 
   // Simulator functions
@@ -345,33 +349,38 @@ export default function TrackingScreen({ onTripCompleted, userId }: TrackingScre
         speedKmh: simSpeed,
       };
 
-      if (prevPoint) {
+      const prevCoord: Coordinate | null = prevPoint
+        ? {
+            latitude: prevPoint.latitude,
+            longitude: prevPoint.longitude,
+            timestamp: Date.now() - 1400,
+            speedKmh: simSpeed,
+          }
+        : null;
+
+      if (prevCoord) {
         const b = getBearing(
-          prevPoint.latitude,
-          prevPoint.longitude,
+          prevCoord.latitude,
+          prevCoord.longitude,
           simPoint.latitude,
           simPoint.longitude
         );
         setHeading(b);
+
+        const stepDist = getDistance(prevCoord, newCoord);
+        setDistance((prev) => Number((prev + stepDist).toFixed(2)));
       }
 
-      setCoordinates((prev) => {
-        const nextCoords = [...prev, newCoord];
-        const totalDist = calculateRouteDistance(nextCoords);
-        setDistance(totalDist);
+      const alert = findActiveRadarAlert(newCoord, prevCoord, cameras, simSpeed, 600);
+      setActiveAlert(alert);
 
-        const prevCoord = prev.length > 0 ? prev[prev.length - 1] : null;
-        const alert = findActiveRadarAlert(newCoord, prevCoord, cameras, simSpeed, 600);
-        setActiveAlert(alert);
+      const limit = getCurrentSpeedLimit(newCoord, cameras);
+      setCurrentSpeedLimit(limit);
 
-        const limit = getCurrentSpeedLimit(newCoord, cameras);
-        setCurrentSpeedLimit(limit);
+      if (alert) radarAudio.playProximityChime(alert.distanceMeters);
+      if (simSpeed > limit) radarAudio.playOverspeedAlarm();
 
-        if (alert) radarAudio.playProximityChime(alert.distanceMeters);
-        if (simSpeed > limit) radarAudio.playOverspeedAlarm();
-
-        return nextCoords;
-      });
+      setCoordinates((prev) => [...prev, newCoord]);
 
       // Re-fetch cameras every 12 steps (≈ every ~300 meters moved)
       if (simulatorIndexRef.current % 12 === 0) {
